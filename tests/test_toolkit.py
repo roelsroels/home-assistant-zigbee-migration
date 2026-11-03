@@ -5,7 +5,12 @@ import tempfile
 import unittest
 
 from ha_zigbee_migrator.config import ConfigError, _env_name
-from ha_zigbee_migrator.cli import build_parser, normalize_ieee, successful_z2m_device
+from ha_zigbee_migrator.cli import (
+    already_has_target_name,
+    build_parser,
+    normalize_ieee,
+    successful_z2m_device,
+)
 from ha_zigbee_migrator.z2m import Z2MClient
 from ha_zigbee_migrator.inventory import (
     backup_entity_id,
@@ -21,6 +26,11 @@ from ha_zigbee_migrator.safety import (
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_already_correct_friendly_name_is_idempotent(self) -> None:
+        result = {"friendly_name": "sensor_room"}
+        self.assertTrue(already_has_target_name(result, "sensor_room"))
+        self.assertFalse(already_has_target_name(result, "sensor_kitchen"))
+
     def test_ieee_normalization_and_recovery_detection(self) -> None:
         ieee = normalize_ieee("00:15:8D:00:00:00:00:01")
         self.assertEqual(ieee, "0x00158d0000000001")
@@ -156,6 +166,42 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(
             suggestions["binary_sensor.hall_motion"][0],
             "binary_sensor.hall_new_occupancy",
+        )
+        self.assertEqual(unresolved, [])
+
+    def test_mapping_uses_unique_device_classes(self) -> None:
+        old = [
+            {
+                "entity_id": "sensor.temperature_16",
+                "original_name": "Room sensor",
+                "state_attributes": {"device_class": "temperature"},
+            },
+            {
+                "entity_id": "sensor.pressure_18",
+                "original_name": "Room sensor",
+                "state_attributes": {"device_class": "pressure"},
+            },
+        ]
+        new = [
+            {
+                "entity_id": "sensor.sensor_room_temperature",
+                "original_name": "Temperature",
+                "state_attributes": {"device_class": "temperature"},
+            },
+            {
+                "entity_id": "sensor.sensor_room_pressure",
+                "original_name": "Atmospheric pressure",
+                "state_attributes": {"device_class": "atmospheric_pressure"},
+            },
+        ]
+        suggestions, unresolved = suggest_entity_mappings(old, new)
+        self.assertEqual(
+            suggestions["sensor.temperature_16"][0],
+            "sensor.sensor_room_temperature",
+        )
+        self.assertEqual(
+            suggestions["sensor.pressure_18"][0],
+            "sensor.sensor_room_pressure",
         )
         self.assertEqual(unresolved, [])
 

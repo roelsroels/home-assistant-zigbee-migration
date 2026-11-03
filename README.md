@@ -84,6 +84,8 @@ checks Z2M's retained device inventory. A matching successfully interviewed
 device is recovered without opening joining or requiring another factory reset.
 After a new device appears, joining closes immediately while the script keeps
 waiting separately for its interview to finish.
+If the recovered device already has the requested Z2M friendly name, the rename
+stage is treated as complete instead of sending a duplicate rename request.
 
 If a mapping is ambiguous, the wizard stops at that device and identifies the
 few unresolved worksheet cells. It will not advance or guess.

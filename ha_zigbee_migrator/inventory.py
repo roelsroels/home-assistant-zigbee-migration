@@ -227,6 +227,14 @@ def suggest_entity_mappings(
     def normalized_original(item: dict[str, Any]) -> str:
         return str(item.get("original_name") or "").strip().casefold()
 
+    def device_class(item: dict[str, Any]) -> str:
+        attributes = item.get("state_attributes") or {}
+        value = str(attributes.get("device_class") or "").strip().casefold()
+        aliases = {
+            "pressure": "atmospheric_pressure",
+        }
+        return aliases.get(value, value)
+
     def tail(item: dict[str, Any]) -> str:
         entity_id = item["entity_id"]
         return entity_id.split(".", 1)[1].rsplit("_", 1)[-1].casefold()
@@ -261,6 +269,7 @@ def suggest_entity_mappings(
             unmatched_old.remove(old_id)
             unmatched_new.remove(new_id)
 
+    assign_unique(device_class, "same unique device class")
     assign_unique(normalized_original, "same unique original name")
     assign_unique(tail, "same unique ID suffix")
 

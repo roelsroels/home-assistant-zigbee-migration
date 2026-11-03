@@ -157,6 +157,11 @@ def successful_z2m_device(
     )
 
 
+def already_has_target_name(result: dict[str, Any], target: str) -> bool:
+    """Return whether the interviewed Z2M device already has the target name."""
+    return str(result.get("friendly_name") or "") == target
+
+
 def ha_device_ids_for_ieee(devices: list[dict[str, Any]], ieee: str) -> set[str]:
     """Find HA device-registry IDs whose identifiers contain the target IEEE."""
     needle = ieee.lower().replace("0x", "").replace(":", "")
@@ -414,24 +419,36 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
             raise SafetyError("Interview result has no IEEE address; refusing to rename")
         print(f"New device interviewed successfully: {result}")
         if row.status != "renamed":
-            if getattr(args, "wizard_confirmed", False):
-                confirm_exact(
-                    "Confirm that this IEEE/model is the intended physical device "
-                    f"and rename it to {row.target_friendly_name!r}.",
-                    f"ACCEPT {ieee} AS {row.target_friendly_name}",
+            if already_has_target_name(result, row.target_friendly_name):
+                print(
+                    f"The device already has friendly name "
+                    f"{row.target_friendly_name!r}; the rename request is skipped."
                 )
+                rename_result = {
+                    "from": row.target_friendly_name,
+                    "to": row.target_friendly_name,
+                    "already_named": True,
+                }
             else:
-                confirm_exact(
-                    "Accept this newly joined device as the intended migration target.",
-                    f"ACCEPT {ieee}",
-                )
-                confirm_exact(
-                    f"Rename {ieee} to {row.target_friendly_name!r} and request HA "
-                    "discovery rename.",
-                    f"RENAME {ieee} TO {row.target_friendly_name}",
-                )
-            rename_result = z2m.rename_device(ieee, row.target_friendly_name)
-            print(f"Rename response: {rename_result}")
+                if getattr(args, "wizard_confirmed", False):
+                    confirm_exact(
+                        "Confirm that this IEEE/model is the intended physical device "
+                        f"and rename it to {row.target_friendly_name!r}.",
+                        f"ACCEPT {ieee} AS {row.target_friendly_name}",
+                    )
+                else:
+                    confirm_exact(
+                        "Accept this newly joined device as the intended migration "
+                        "target.",
+                        f"ACCEPT {ieee}",
+                    )
+                    confirm_exact(
+                        f"Rename {ieee} to {row.target_friendly_name!r} and request "
+                        "HA discovery rename.",
+                        f"RENAME {ieee} TO {row.target_friendly_name}",
+                    )
+                rename_result = z2m.rename_device(ieee, row.target_friendly_name)
+                print(f"Rename response: {rename_result}")
             saved = read_json(result_path)
             saved["stage"] = "renamed"
             saved["rename_response"] = rename_result
@@ -693,6 +710,19 @@ def suggest_mappings_for_device(config: AppConfig, migration_id: str) -> list[st
     before_ids = set(result.get("before_home_assistant_entity_ids") or [])
     with HomeAssistantClient(config.home_assistant) as ha:
         current_entities = ha.entities()
+        current_states = ha.states()
+    state_by_id = {item["entity_id"]: item for item in current_states}
+
+    def add_state_attributes(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        enriched = []
+        for item in items:
+            copy = dict(item)
+            copy["state_attributes"] = (
+                state_by_id.get(item["entity_id"], {}).get("attributes") or {}
+            )
+            enriched.append(copy)
+        return enriched
+
     refreshed_new = [
         item for item in current_entities if item["entity_id"] not in before_ids
     ]
@@ -724,6 +754,8 @@ def suggest_mappings_for_device(config: AppConfig, migration_id: str) -> list[st
             for item in current_entities
             if item["entity_id"] in plan_row.old_entity_ids
         ]
+    old_entities = add_state_attributes(old_entities)
+    new_entities = add_state_attributes(new_entities)
     suggestions, _algorithm_unresolved = suggest_entity_mappings(
         old_entities, new_entities
     )
