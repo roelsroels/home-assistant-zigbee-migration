@@ -73,11 +73,28 @@ def next_incomplete_row(config: AppConfig) -> Any | None:
     )
 
 
-def print_suggested_device(config: AppConfig, row: Any) -> None:
+def plan_row_by_id(config: AppConfig, migration_id: str) -> Any:
+    """Load one current plan row by its stable migration ID."""
+    row = next(
+        (
+            item
+            for item in load_plan(paths(config)["plan"])
+            if item.migration_id == migration_id
+        ),
+        None,
+    )
+    if row is None:
+        raise SafetyError(f"Migration ID {migration_id!r} does not exist in the plan")
+    return row
+
+
+def print_suggested_device(
+    config: AppConfig, row: Any, heading: str = "Suggested next device:"
+) -> None:
     plan = load_plan(paths(config)["plan"])
     complete = sum(item.status in {"verified", "skip"} for item in plan)
     print(f"\nMigration progress: {complete}/{len(plan)} devices complete")
-    print("Suggested next device:")
+    print(heading)
     print(f"  ID:     {row.migration_id}")
     print(f"  Name:   {row.old_device_name}")
     print(f"  Status: {row.status}")
@@ -630,18 +647,29 @@ def suggest_mappings_for_device(config: AppConfig, migration_id: str) -> list[st
     return unresolved
 
 
-def command_migrate_next(config: AppConfig, _args: argparse.Namespace) -> None:
-    """Run or resume the next incomplete device through the safe state machine."""
-    row = next_incomplete_row(config)
-    if row is None:
-        print("All planned devices are verified or deliberately skipped.")
+def run_device_workflow(
+    config: AppConfig,
+    row: Any,
+    selection_message: str,
+    resume_command: str,
+) -> None:
+    """Run or resume one explicitly selected plan row through all safe stages."""
+    if row.status == "verified":
+        print_suggested_device(config, row, "Selected device:")
+        print("This device is already verified; no operation was started.")
         return
-    print_suggested_device(config, row)
+    if row.status == "skip":
+        raise SafetyError(
+            f"{row.migration_id} is deliberately marked skip. Change its plan status "
+            "only after reviewing why it was skipped."
+        )
+    print_suggested_device(config, row, "Selected device:")
     if not confirm_or_cancel(
-        "The wizard selected this device from the first incomplete plan row. "
-        "It will not select a later device until this one verifies successfully."
+        selection_message
     ):
         return
+
+    migration_id = row.migration_id
 
     if row.status in {"pending", "retry", "interviewed", "renamed"}:
         command_pair(
@@ -651,9 +679,7 @@ def command_migrate_next(config: AppConfig, _args: argparse.Namespace) -> None:
                 wizard_confirmed=True,
             ),
         )
-        row = next_incomplete_row(config)
-        if row is None:
-            return
+        row = plan_row_by_id(config, migration_id)
 
     if row.status == "paired":
         unresolved = suggest_mappings_for_device(config, row.migration_id)
@@ -661,20 +687,19 @@ def command_migrate_next(config: AppConfig, _args: argparse.Namespace) -> None:
             print(
                 f"\nStopped safely at {row.migration_id}. Fill only the unresolved "
                 f"new_entity_id cells in {paths(config)['map']}, or mark a row skip "
-                "after deliberate review. Then run migrate-next again."
+                f"after deliberate review. Then run {resume_command} again."
             )
             return
         command_apply_entity_map(
             config,
             argparse.Namespace(migration_id=row.migration_id, apply=True),
         )
-        row = next_incomplete_row(config)
-        if row is None:
-            return
+        row = plan_row_by_id(config, migration_id)
         if row.status != "mapped":
             print(
                 f"\nStopped safely at {row.migration_id}: its mapping stage is not "
-                "complete yet. Run migrate-next again after reviewing entity-map.csv."
+                f"complete yet. Run {resume_command} again after reviewing "
+                "entity-map.csv."
             )
             return
 
@@ -684,12 +709,46 @@ def command_migrate_next(config: AppConfig, _args: argparse.Namespace) -> None:
             argparse.Namespace(migration_id=row.migration_id),
         )
 
+    row = plan_row_by_id(config, migration_id)
+    if row.status != "verified":
+        raise SafetyError(
+            f"{migration_id} stopped with status {row.status!r}; it was not marked "
+            "successful and no other device was advanced"
+        )
+
     next_row = next_incomplete_row(config)
     if next_row is None:
         print("\nMigration plan complete: every device is verified or skipped.")
     else:
         print("\nThis device verified successfully. On the next run, the wizard will suggest:")
         print_suggested_device(config, next_row)
+
+
+def command_migrate_next(config: AppConfig, _args: argparse.Namespace) -> None:
+    """Select and run the first incomplete device."""
+    row = next_incomplete_row(config)
+    if row is None:
+        print("All planned devices are verified or deliberately skipped.")
+        return
+    run_device_workflow(
+        config,
+        row,
+        "The wizard selected the first incomplete plan row. It will not select a "
+        "later device until this one verifies successfully.",
+        "./run.sh migrate-next",
+    )
+
+
+def command_migrate(config: AppConfig, args: argparse.Namespace) -> None:
+    """Run or resume a specific migration ID requested by the user."""
+    row = plan_row_by_id(config, args.migration_id)
+    run_device_workflow(
+        config,
+        row,
+        f"You explicitly selected {row.migration_id}. Other unfinished rows will "
+        "remain unchanged.",
+        f"./run.sh migrate {row.migration_id}",
+    )
 
 
 def command_initialize(config: AppConfig, _args: argparse.Namespace) -> None:
@@ -753,6 +812,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("initialize")
     subparsers.add_parser("preflight")
     subparsers.add_parser("migrate-next")
+    migrate = subparsers.add_parser("migrate")
+    migrate.add_argument("migration_id")
     baseline = subparsers.add_parser("baseline")
     baseline.add_argument("--replace", action="store_true")
     snapshot = subparsers.add_parser("snapshot")
@@ -773,6 +834,7 @@ COMMANDS = {
     "initialize": command_initialize,
     "preflight": command_preflight,
     "migrate-next": command_migrate_next,
+    "migrate": command_migrate,
     "baseline": command_baseline,
     "snapshot": command_snapshot,
     "audit": command_audit,

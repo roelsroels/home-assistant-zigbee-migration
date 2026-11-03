@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 from ha_zigbee_migrator.config import ConfigError, _env_name
+from ha_zigbee_migrator.cli import build_parser
 from ha_zigbee_migrator.inventory import (
     backup_entity_id,
     scan_references,
@@ -17,6 +18,11 @@ from ha_zigbee_migrator.safety import (
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_specific_migration_command_parses(self) -> None:
+        args = build_parser().parse_args(["migrate", "D020"])
+        self.assertEqual(args.command, "migrate")
+        self.assertEqual(args.migration_id, "D020")
+
     def test_secret_is_rejected_as_environment_variable_name(self) -> None:
         with self.assertRaises(ConfigError):
             _env_name("not-an-env-name.with-dot", "token_env", "HA_TOKEN")

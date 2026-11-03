@@ -81,6 +81,15 @@ Then run `migrate-next`. The wizard:
 If a mapping is ambiguous, the wizard stops at that device and identifies the
 few unresolved worksheet cells. It will not advance or guess.
 
+To choose a particular planned device instead of accepting the next suggestion:
+
+```bash
+./run.sh migrate D020
+```
+
+This runs or resumes D020 through the same guarded workflow. Other incomplete
+rows keep their existing status and are not marked skipped.
+
 ## Individual commands for inspection and recovery
 
 ### 1. Connectivity preflight
@@ -227,6 +236,7 @@ Only then move to the next device.
 ```text
 initialize                One-time guarded preparation; preserves existing work
 migrate-next              Select, migrate, map and verify the next device
+migrate D020              Migrate or resume one explicitly selected device
 preflight                 Read-only connectivity and coordinator check
 baseline                  Pin the current ConBee II/Z2M network identity
 backup-z2m                Download and checksum a Z2M data backup
