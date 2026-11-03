@@ -1,0 +1,5 @@
+.venv/
+config.toml
+migration-output/
+__pycache__/
+*.py[cod]

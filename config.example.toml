@@ -1,0 +1,23 @@
+[home_assistant]
+url = "https://ha.example.com"
+token_env = "HA_TOKEN"
+verify_tls = true
+
+[mqtt]
+host = "mqtt.example.com"
+port = 1883
+username_env = "MQTT_USERNAME"
+password_env = "MQTT_PASSWORD"
+base_topic = "zigbee2mqtt"
+tls = false
+
+[paths]
+output_dir = "./migration-output"
+# Optional. Point this at a read-only copy or mount of /config to scan YAML and
+# storage dashboards for references. The toolkit never edits .storage files.
+home_assistant_config = ""
+
+[safety]
+# Pairing is deliberately short and coordinator-only by default.
+permit_join_seconds = 60
+expected_coordinator_type_contains = "ConBee2"
