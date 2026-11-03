@@ -123,13 +123,27 @@ class Z2MClient:
     def close_join(self) -> None:
         self.request("permit_join", {"time": 0})
 
-    def supervised_pair(self, seconds: int) -> dict[str, Any]:
-        """Open coordinator-only joining and return one successfully interviewed device."""
+    def supervised_pair(
+        self,
+        seconds: int,
+        expected_ieee: str | None = None,
+        interview_timeout: int = 90,
+    ) -> dict[str, Any]:
+        """Join one device and keep watching after joining closes.
+
+        Zigbee2MQTT can finish interviewing after the permit-join timer ends, and
+        MQTT events can occasionally be missed. Therefore both bridge events and
+        the retained bridge/devices inventory are observed. Joining is closed as
+        soon as the first candidate appears, while interview monitoring continues.
+        """
+        devices_topic = f"{self.base}/bridge/devices"
+        initial_devices = self.retained("bridge/devices")
         existing = {
-            device.get("ieee_address")
-            for device in self.retained("bridge/devices")
-            if isinstance(device, dict)
+            str(device.get("ieee_address")).lower()
+            for device in initial_devices
+            if isinstance(device, dict) and device.get("ieee_address")
         }
+        expected_ieee = expected_ieee.lower() if expected_ieee else None
         while not self.events.empty():
             try:
                 self.events.get_nowait()
@@ -145,47 +159,105 @@ class Z2MClient:
             "Factory-reset exactly one intended device now."
         )
         successes: dict[str, dict[str, Any]] = {}
-        deadline = time.monotonic() + seconds
+        candidates: set[str] = set()
+        observed: list[dict[str, Any]] = []
+        join_deadline = time.monotonic() + seconds
+        interview_deadline: float | None = None
+        join_closed = False
+
+        def eligible(ieee: Any) -> str | None:
+            if not ieee:
+                return None
+            normalized = str(ieee).lower()
+            if normalized not in existing or normalized == expected_ieee:
+                return normalized
+            return None
+
+        def inspect_inventory() -> None:
+            inventory = self.messages.get(devices_topic)
+            if not isinstance(inventory, list):
+                return
+            for device in inventory:
+                if not isinstance(device, dict):
+                    continue
+                ieee = eligible(device.get("ieee_address"))
+                if not ieee:
+                    continue
+                candidates.add(ieee)
+                if device.get("interview_completed") or str(
+                    device.get("interview_state", "")
+                ).upper() == "SUCCESSFUL":
+                    successes[ieee] = {
+                        "ieee_address": ieee,
+                        "friendly_name": device.get("friendly_name", ieee),
+                        "status": "successful",
+                        "supported": device.get("supported"),
+                        "definition": device.get("definition"),
+                        "source": "bridge/devices",
+                    }
+
         try:
-            while time.monotonic() < deadline:
-                try:
-                    event = self.events.get(timeout=min(2, deadline - time.monotonic()))
-                except Empty:
-                    continue
-                if event.get("type") != "device_interview":
-                    continue
-                data = event.get("data") or {}
-                if data.get("status") != "successful":
-                    continue
-                ieee = data.get("ieee_address")
-                if ieee and ieee not in existing:
-                    successes[ieee] = data
-                    # Keep listening briefly so an accidental second join is detected.
-                    grace_deadline = min(deadline, time.monotonic() + 4)
-                    while time.monotonic() < grace_deadline:
-                        try:
-                            extra = self.events.get(
-                                timeout=min(1, grace_deadline - time.monotonic())
-                            )
-                        except Empty:
-                            continue
-                        if extra.get("type") != "device_interview":
-                            continue
-                        extra_data = extra.get("data") or {}
-                        extra_ieee = extra_data.get("ieee_address")
-                        if (
-                            extra_data.get("status") == "successful"
-                            and extra_ieee
-                            and extra_ieee not in existing
-                        ):
-                            successes[extra_ieee] = extra_data
+            while True:
+                now = time.monotonic()
+                deadline = interview_deadline or join_deadline
+                if now >= deadline:
                     break
+                try:
+                    event = self.events.get(timeout=min(2, deadline - now))
+                except Empty:
+                    inspect_inventory()
+                    if candidates and not join_closed:
+                        self.close_join()
+                        join_closed = True
+                        interview_deadline = time.monotonic() + interview_timeout
+                        print(
+                            "A candidate device appeared; joining is closed while "
+                            "its interview finishes."
+                        )
+                    if len(successes) == 1:
+                        break
+                    continue
+                event_type = event.get("type")
+                data = event.get("data") or {}
+                ieee = eligible(data.get("ieee_address"))
+                observed.append(
+                    {
+                        "type": event_type,
+                        "ieee_address": data.get("ieee_address"),
+                        "status": data.get("status"),
+                    }
+                )
+                if event_type not in {"device_joined", "device_interview"} or not ieee:
+                    continue
+                candidates.add(ieee)
+                if not join_closed:
+                    self.close_join()
+                    join_closed = True
+                    interview_deadline = time.monotonic() + interview_timeout
+                    print(
+                        "A candidate device appeared; joining is closed while its "
+                        "interview finishes."
+                    )
+                if event_type == "device_interview" and data.get("status") == "successful":
+                    successes[ieee] = data
+                    inspect_inventory()
+                    break
+                inspect_inventory()
         finally:
-            self.close_join()
+            if not join_closed:
+                self.close_join()
             print("Joining has been closed.")
-        if len(successes) != 1:
+        inspect_inventory()
+        if expected_ieee and candidates and expected_ieee not in candidates:
             raise Z2MError(
-                f"Expected exactly one newly interviewed device, got {len(successes)}"
+                f"A different device appeared. Expected {expected_ieee}, got "
+                f"{sorted(candidates)}. Observed events: {observed}"
+            )
+        if len(candidates) > 1 or len(successes) != 1:
+            raise Z2MError(
+                "Expected exactly one successfully interviewed device; "
+                f"candidates={sorted(candidates)}, successful={sorted(successes)}, "
+                f"observed_events={observed}"
             )
         return next(iter(successes.values()))
 

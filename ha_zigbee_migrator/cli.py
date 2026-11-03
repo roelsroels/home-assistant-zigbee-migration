@@ -104,6 +104,77 @@ def print_suggested_device(
         print(f"    - {entity_id}")
 
 
+def normalize_ieee(value: str) -> str:
+    """Normalize HA colon-separated Zigbee addresses to Z2M's 0x form."""
+    compact = value.lower().replace(":", "").replace("-", "")
+    if compact.startswith("0x"):
+        compact = compact[2:]
+    return f"0x{compact}"
+
+
+def planned_ieee_address(config: AppConfig, row: Any) -> str | None:
+    """Resolve the original deCONZ IEEE address from the saved HA snapshot."""
+    snapshots = sorted(paths(config)["snapshots"].glob("snapshot-*.json"))
+    if not snapshots:
+        return None
+    snapshot = read_json(snapshots[-1])
+    device = next(
+        (
+            item
+            for item in snapshot["home_assistant"]["devices"]
+            if item.get("id") == row.old_device_id
+        ),
+        None,
+    )
+    if not device:
+        return None
+    for connection_type, value in device.get("connections") or []:
+        if connection_type == "zigbee" and value:
+            return normalize_ieee(str(value))
+    for identifier_type, value in device.get("identifiers") or []:
+        if identifier_type == "deconz" and value:
+            return normalize_ieee(str(value))
+    return None
+
+
+def successful_z2m_device(
+    devices: list[dict[str, Any]], ieee: str | None
+) -> dict[str, Any] | None:
+    """Return an already successfully interviewed target from bridge/devices."""
+    if not ieee:
+        return None
+    return next(
+        (
+            device
+            for device in devices
+            if str(device.get("ieee_address", "")).lower() == ieee.lower()
+            and (
+                device.get("interview_completed")
+                or str(device.get("interview_state", "")).upper() == "SUCCESSFUL"
+            )
+        ),
+        None,
+    )
+
+
+def ha_device_ids_for_ieee(devices: list[dict[str, Any]], ieee: str) -> set[str]:
+    """Find HA device-registry IDs whose identifiers contain the target IEEE."""
+    needle = ieee.lower().replace("0x", "").replace(":", "")
+    matches: set[str] = set()
+    for device in devices:
+        values = [
+            str(value).lower().replace("0x", "").replace(":", "")
+            for _kind, value in (device.get("identifiers") or [])
+        ]
+        values.extend(
+            str(value).lower().replace("0x", "").replace(":", "")
+            for _kind, value in (device.get("connections") or [])
+        )
+        if any(needle in value for value in values):
+            matches.add(device["id"])
+    return matches
+
+
 def require_baseline(config: AppConfig, z2m: Z2MClient) -> dict[str, Any]:
     baseline_path = paths(config)["baseline"]
     if not baseline_path.exists():
@@ -274,13 +345,6 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
             print(f"Resuming the recorded {row.status} stage from {result_path}")
             print("Joining will not be opened again.")
         else:
-            if not getattr(args, "wizard_confirmed", False):
-                confirm_exact(
-                    "Open coordinator-only joining and migrate exactly this one "
-                    "physical device. Ensure every other Zigbee device is powered "
-                    "normally and do not reset any other device.",
-                    f"PAIR {row.migration_id}",
-                )
             before_registry = ha.entities()
             before_entities = {item["entity_id"] for item in before_registry}
             old_registry_entities = [
@@ -288,7 +352,37 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
                 for item in before_registry
                 if item["entity_id"] in row.old_entity_ids
             ]
-            result = z2m.supervised_pair(config.safety.permit_join_seconds)
+            expected_ieee = planned_ieee_address(config, row)
+            bridge_devices = z2m.retained("bridge/devices")
+            recovered = successful_z2m_device(bridge_devices, expected_ieee)
+            if recovered:
+                print(
+                    f"The planned IEEE {expected_ieee} is already successfully "
+                    "interviewed in Z2M. The earlier attempt succeeded; joining will "
+                    "not be opened again."
+                )
+                result = {
+                    "ieee_address": recovered["ieee_address"],
+                    "friendly_name": recovered.get(
+                        "friendly_name", recovered["ieee_address"]
+                    ),
+                    "status": "successful",
+                    "supported": recovered.get("supported"),
+                    "definition": recovered.get("definition"),
+                    "source": "recovered from bridge/devices",
+                }
+            else:
+                if not getattr(args, "wizard_confirmed", False):
+                    confirm_exact(
+                        "Open coordinator-only joining and migrate exactly this one "
+                        "physical device. Ensure every other Zigbee device is powered "
+                        "normally and do not reset any other device.",
+                        f"PAIR {row.migration_id}",
+                    )
+                result = z2m.supervised_pair(
+                    config.safety.permit_join_seconds,
+                    expected_ieee=expected_ieee,
+                )
             result_path = (
                 output["pair_results"]
                 / f"{row.migration_id}-{timestamp_slug()}.json"
@@ -301,6 +395,7 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
                     "old_device_id": row.old_device_id,
                     "old_entity_ids": row.old_entity_ids,
                     "target_friendly_name": row.target_friendly_name,
+                    "expected_ieee_address": expected_ieee,
                     "interview": result,
                     "before_home_assistant_entity_ids": sorted(before_entities),
                     "old_home_assistant_entities": old_registry_entities,
@@ -354,9 +449,21 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
         print("Waiting 12 seconds for Home Assistant MQTT discovery...")
         time.sleep(12)
         after = ha.entities()
-        new_entities = [
+        discovered_entities = [
             item for item in after if item["entity_id"] not in before_entities
         ]
+        ha_device_ids = ha_device_ids_for_ieee(ha.devices(), str(ieee))
+        target_entities = [
+            item
+            for item in after
+            if item.get("platform") == "mqtt"
+            and item.get("device_id") in ha_device_ids
+        ]
+        new_entities_by_id = {
+            item["entity_id"]: item
+            for item in discovered_entities + target_entities
+        }
+        new_entities = list(new_entities_by_id.values())
         saved = read_json(result_path)
         saved["stage"] = "paired_and_renamed"
         saved["rename_response"] = rename_result

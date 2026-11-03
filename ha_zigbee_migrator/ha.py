@@ -80,6 +80,9 @@ class HomeAssistantClient:
     def entities(self) -> list[dict[str, Any]]:
         return self.call("config/entity_registry/list")
 
+    def devices(self) -> list[dict[str, Any]]:
+        return self.call("config/device_registry/list")
+
     def states(self) -> list[dict[str, Any]]:
         return self.call("get_states")
 

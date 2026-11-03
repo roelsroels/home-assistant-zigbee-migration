@@ -78,6 +78,13 @@ Then run `migrate-next`. The wizard:
 9. Verifies that the replacement entities are healthy and no longer deCONZ.
 10. Marks the device verified and displays the next suggested device.
 
+The original deCONZ IEEE address is read from the initialization snapshot. If a
+pairing command is interrupted or misses the final MQTT event, the next run
+checks Z2M's retained device inventory. A matching successfully interviewed
+device is recovered without opening joining or requiring another factory reset.
+After a new device appears, joining closes immediately while the script keeps
+waiting separately for its interview to finish.
+
 If a mapping is ambiguous, the wizard stops at that device and identifies the
 few unresolved worksheet cells. It will not advance or guess.
 

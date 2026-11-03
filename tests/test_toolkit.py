@@ -1,9 +1,12 @@
 from pathlib import Path
+from queue import Queue
+from types import MethodType, SimpleNamespace
 import tempfile
 import unittest
 
 from ha_zigbee_migrator.config import ConfigError, _env_name
-from ha_zigbee_migrator.cli import build_parser
+from ha_zigbee_migrator.cli import build_parser, normalize_ieee, successful_z2m_device
+from ha_zigbee_migrator.z2m import Z2MClient
 from ha_zigbee_migrator.inventory import (
     backup_entity_id,
     scan_references,
@@ -18,6 +21,48 @@ from ha_zigbee_migrator.safety import (
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_ieee_normalization_and_recovery_detection(self) -> None:
+        ieee = normalize_ieee("00:15:8D:00:00:00:00:01")
+        self.assertEqual(ieee, "0x00158d0000000001")
+        device = {
+            "ieee_address": ieee,
+            "interview_state": "SUCCESSFUL",
+        }
+        self.assertIs(successful_z2m_device([device], ieee), device)
+
+    def test_inventory_recovers_a_missed_success_event(self) -> None:
+        ieee = "0x00158d0000000001"
+        client = Z2MClient.__new__(Z2MClient)
+        client.config = SimpleNamespace(base_topic="zigbee2mqtt")
+        client.events = Queue()
+        client.messages = {}
+        client.client = SimpleNamespace(subscribe=lambda _topic: None)
+
+        def retained(_self: Z2MClient, _suffix: str) -> list[dict[str, object]]:
+            return []
+
+        def request(
+            self: Z2MClient, _path: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            if payload.get("time"):
+                self.messages["zigbee2mqtt/bridge/devices"] = [
+                    {
+                        "ieee_address": ieee,
+                        "friendly_name": ieee,
+                        "interview_completed": True,
+                        "interview_state": "SUCCESSFUL",
+                        "supported": True,
+                        "definition": {"model": "WSDCGQ11LM"},
+                    }
+                ]
+            return {}
+
+        client.retained = MethodType(retained, client)
+        client.request = MethodType(request, client)
+        result = client.supervised_pair(0.01, expected_ieee=ieee)
+        self.assertEqual(result["ieee_address"], ieee)
+        self.assertEqual(result["source"], "bridge/devices")
+
     def test_specific_migration_command_parses(self) -> None:
         for migration_id in ("D001", "D020", "D127", "D999"):
             with self.subTest(migration_id=migration_id):
