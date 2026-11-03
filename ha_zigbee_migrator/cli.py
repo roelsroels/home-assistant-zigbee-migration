@@ -813,7 +813,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("preflight")
     subparsers.add_parser("migrate-next")
     migrate = subparsers.add_parser("migrate")
-    migrate.add_argument("migration_id")
+    migrate.add_argument(
+        "migration_id",
+        metavar="DXXX",
+        help="any migration ID present in migration-plan.csv (for example D001)",
+    )
     baseline = subparsers.add_parser("baseline")
     baseline.add_argument("--replace", action="store_true")
     snapshot = subparsers.add_parser("snapshot")

@@ -19,9 +19,11 @@ from ha_zigbee_migrator.safety import (
 
 class ToolkitTests(unittest.TestCase):
     def test_specific_migration_command_parses(self) -> None:
-        args = build_parser().parse_args(["migrate", "D020"])
-        self.assertEqual(args.command, "migrate")
-        self.assertEqual(args.migration_id, "D020")
+        for migration_id in ("D001", "D020", "D127", "D999"):
+            with self.subTest(migration_id=migration_id):
+                args = build_parser().parse_args(["migrate", migration_id])
+                self.assertEqual(args.command, "migrate")
+                self.assertEqual(args.migration_id, migration_id)
 
     def test_secret_is_rejected_as_environment_variable_name(self) -> None:
         with self.assertRaises(ConfigError):
