@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
 import tomllib
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 
@@ -64,6 +66,17 @@ def _env_value(name: str, required: bool) -> str | None:
     return value
 
 
+def _env_name(value: Any, setting: str, default: str) -> str:
+    """Validate that an *_env setting contains a variable name, not a secret."""
+    name = str(value or default).strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ConfigError(
+            f"{setting} must be an environment-variable name such as {default!r}, "
+            "not the credential itself"
+        )
+    return name
+
+
 def load_config(path: str | Path) -> AppConfig:
     """Load a TOML configuration file without storing secrets in it."""
     config_path = Path(path).expanduser().resolve()
@@ -79,9 +92,15 @@ def load_config(path: str | Path) -> AppConfig:
     if not ha_url.startswith(("http://", "https://")):
         raise ConfigError("home_assistant.url must start with http:// or https://")
 
-    token_env = str(ha_raw.get("token_env", "HA_TOKEN"))
-    mqtt_user_env = str(mqtt_raw.get("username_env", "MQTT_USERNAME"))
-    mqtt_password_env = str(mqtt_raw.get("password_env", "MQTT_PASSWORD"))
+    token_env = _env_name(
+        ha_raw.get("token_env"), "home_assistant.token_env", "HA_TOKEN"
+    )
+    mqtt_user_env = _env_name(
+        mqtt_raw.get("username_env"), "mqtt.username_env", "MQTT_USERNAME"
+    )
+    mqtt_password_env = _env_name(
+        mqtt_raw.get("password_env"), "mqtt.password_env", "MQTT_PASSWORD"
+    )
     mqtt_host = str(mqtt_raw.get("host", "")).strip()
     if not mqtt_host:
         raise ConfigError("mqtt.host must not be empty")

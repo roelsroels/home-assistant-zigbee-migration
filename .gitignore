@@ -1,5 +1,6 @@
 .venv/
 config.toml
+secrets.env
 migration-output/
 __pycache__/
 *.py[cod]

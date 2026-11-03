@@ -2,6 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from ha_zigbee_migrator.config import ConfigError, _env_name
 from ha_zigbee_migrator.inventory import (
     backup_entity_id,
     scan_references,
@@ -16,6 +17,11 @@ from ha_zigbee_migrator.safety import (
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_secret_is_rejected_as_environment_variable_name(self) -> None:
+        with self.assertRaises(ConfigError):
+            _env_name("not-an-env-name.with-dot", "token_env", "HA_TOKEN")
+        self.assertEqual(_env_name("HA_TOKEN", "token_env", "HA_TOKEN"), "HA_TOKEN")
+
     def test_slugify(self) -> None:
         self.assertEqual(slugify("Hall Motion Sensor"), "hall_motion_sensor")
         self.assertEqual(slugify("  Kitchen / Left  "), "kitchen_left")

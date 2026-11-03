@@ -31,7 +31,18 @@ chmod +x setup.sh run.sh
 ./setup.sh
 ```
 
-Edit `config.toml`, then set credentials for the current terminal:
+Edit `config.toml`. The `token_env`, `username_env`, and `password_env` fields
+must remain environment-variable names; never paste credentials into those
+fields.
+
+For persistent local credentials, copy the ignored secrets template:
+
+```bash
+cp secrets.env.example secrets.env
+```
+
+Put the real values in `secrets.env`. `run.sh` loads it automatically. You can
+alternatively set credentials for only the current terminal:
 
 ```bash
 export HA_TOKEN='your-long-lived-token'
