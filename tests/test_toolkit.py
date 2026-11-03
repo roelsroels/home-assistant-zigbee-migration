@@ -16,6 +16,7 @@ from ha_zigbee_migrator.inventory import (
     backup_entity_id,
     scan_references,
     suggest_entity_mappings,
+    verify_expected_entities,
 )
 from ha_zigbee_migrator.safety import (
     SafetyError,
@@ -26,6 +27,45 @@ from ha_zigbee_migrator.safety import (
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_unknown_diagnostic_does_not_block_verification(self) -> None:
+        report = verify_expected_entities(
+            entities=[
+                {
+                    "entity_id": "sensor.battery",
+                    "platform": "mqtt",
+                    "entity_category": "diagnostic",
+                }
+            ],
+            states=[{"entity_id": "sensor.battery", "state": "unknown"}],
+            entity_map=[
+                {
+                    "old_entity_id": "sensor.battery",
+                    "status": "applied",
+                }
+            ],
+        )
+        self.assertTrue(report["healthy"])
+        self.assertTrue(report["results"][0]["diagnostic_pending"])
+
+    def test_unavailable_diagnostic_still_blocks_verification(self) -> None:
+        report = verify_expected_entities(
+            entities=[
+                {
+                    "entity_id": "sensor.battery",
+                    "platform": "mqtt",
+                    "entity_category": "diagnostic",
+                }
+            ],
+            states=[{"entity_id": "sensor.battery", "state": "unavailable"}],
+            entity_map=[
+                {
+                    "old_entity_id": "sensor.battery",
+                    "status": "applied",
+                }
+            ],
+        )
+        self.assertFalse(report["healthy"])
+
     def test_already_correct_friendly_name_is_idempotent(self) -> None:
         result = {"friendly_name": "sensor_room"}
         self.assertTrue(already_has_target_name(result, "sensor_room"))

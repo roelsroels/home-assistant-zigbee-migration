@@ -305,18 +305,30 @@ def verify_expected_entities(
         entity_id = row["old_entity_id"]
         entry = registry.get(entity_id)
         state = state_map.get(entity_id)
+        state_value = state.get("state") if state else None
+        diagnostic_pending = bool(
+            entry
+            and entry.get("entity_category") == "diagnostic"
+            and state_value == "unknown"
+        )
+        healthy = bool(
+            entry
+            and entry.get("platform") != "deconz"
+            and state
+            and (
+                state_value not in {"unknown", "unavailable"}
+                or diagnostic_pending
+            )
+        )
         results.append(
             {
                 "entity_id": entity_id,
                 "exists": entry is not None,
                 "platform": entry.get("platform") if entry else None,
-                "state": state.get("state") if state else None,
-                "healthy": bool(
-                    entry
-                    and entry.get("platform") != "deconz"
-                    and state
-                    and state.get("state") not in {"unknown", "unavailable"}
-                ),
+                "entity_category": entry.get("entity_category") if entry else None,
+                "state": state_value,
+                "diagnostic_pending": diagnostic_pending,
+                "healthy": healthy,
             }
         )
     return {

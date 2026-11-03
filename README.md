@@ -90,6 +90,11 @@ stage is treated as complete instead of sending a duplicate rename request.
 If a mapping is ambiguous, the wizard stops at that device and identifies the
 few unresolved worksheet cells. It will not advance or guess.
 
+An `unknown` diagnostic entity, such as an Aqara battery reading that may take
+many hours to arrive, is reported as a warning and does not block verification
+when the device's functional entities are healthy. An `unavailable` diagnostic
+entity still blocks verification.
+
 To choose **any** particular planned device instead of accepting the next
 suggestion, pass its ID from `migration-plan.csv`:
 

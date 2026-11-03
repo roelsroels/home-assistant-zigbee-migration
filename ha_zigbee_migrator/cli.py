@@ -677,11 +677,19 @@ def command_verify(config: AppConfig, _args: argparse.Namespace) -> None:
     path = output["reports"] / f"verification-{timestamp_slug()}.json"
     write_json(path, report)
     for item in report["results"]:
-        marker = "OK" if item["healthy"] else "CHECK"
+        if item.get("diagnostic_pending"):
+            marker = "WARN"
+        else:
+            marker = "OK" if item["healthy"] else "CHECK"
         print(
             f"[{marker}] {item['entity_id']}: platform={item['platform']}, "
             f"state={item['state']}"
         )
+        if item.get("diagnostic_pending"):
+            print(
+                "       Diagnostic reading has not arrived yet; this does not block "
+                "migration verification."
+            )
     print(f"Verification report written to {path}")
     if not report["healthy"]:
         raise SafetyError("Verification found missing, unavailable, or deCONZ entities")
