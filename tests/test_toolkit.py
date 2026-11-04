@@ -3,6 +3,7 @@ from queue import Queue
 from types import MethodType, SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ha_zigbee_migrator.config import ConfigError, _env_name
 from ha_zigbee_migrator.cli import (
@@ -21,12 +22,38 @@ from ha_zigbee_migrator.inventory import (
 from ha_zigbee_migrator.safety import (
     SafetyError,
     assert_coordinator_matches,
+    confirm_yes_no,
     coordinator_identity,
+    require_confirmation,
     slugify,
 )
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_yes_no_confirmation_accepts_short_and_long_yes(self) -> None:
+        for answer in ("y", "Y", "yes", "YES"):
+            with self.subTest(answer=answer), patch(
+                "builtins.input", return_value=answer
+            ):
+                self.assertTrue(confirm_yes_no("Proceed"))
+
+    def test_yes_no_confirmation_defaults_to_no(self) -> None:
+        for answer in ("", "n", "N", "no", "NO"):
+            with self.subTest(answer=answer), patch(
+                "builtins.input", return_value=answer
+            ):
+                self.assertFalse(confirm_yes_no("Proceed"))
+
+    def test_yes_no_confirmation_reprompts_invalid_input(self) -> None:
+        with patch("builtins.input", side_effect=["maybe", "y"]) as prompt:
+            self.assertTrue(confirm_yes_no("Proceed"))
+        self.assertEqual(prompt.call_count, 2)
+
+    def test_required_confirmation_cancels_on_no(self) -> None:
+        with patch("builtins.input", return_value="n"):
+            with self.assertRaises(SafetyError):
+                require_confirmation("Proceed")
+
     def test_unknown_diagnostic_does_not_block_verification(self) -> None:
         report = verify_expected_entities(
             entities=[

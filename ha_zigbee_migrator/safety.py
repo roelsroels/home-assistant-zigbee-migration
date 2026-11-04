@@ -18,13 +18,22 @@ def timestamp_slug() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def confirm_exact(message: str, phrase: str) -> None:
-    """Require an exact, visible confirmation phrase."""
+def confirm_yes_no(message: str) -> bool:
+    """Ask for a default-safe, case-insensitive Y/N confirmation."""
     print(f"\nSAFETY CONFIRMATION: {message}")
-    print(f"Type exactly: {phrase}")
-    entered = input("> ").strip()
-    if entered != phrase:
-        raise SafetyError("Confirmation did not match; no change was made")
+    while True:
+        entered = input("Continue? [y/N]: ").strip().lower()
+        if entered in {"y", "yes"}:
+            return True
+        if entered in {"", "n", "no"}:
+            return False
+        print("Please answer Y or N.")
+
+
+def require_confirmation(message: str) -> None:
+    """Require an affirmative Y/N answer before a mutating operation."""
+    if not confirm_yes_no(message):
+        raise SafetyError("Cancelled; no change was made")
 
 
 def write_json(path: Path, value: Any) -> None:

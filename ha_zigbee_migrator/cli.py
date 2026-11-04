@@ -25,9 +25,10 @@ from .inventory import (
 from .safety import (
     SafetyError,
     assert_coordinator_matches,
-    confirm_exact,
+    confirm_yes_no,
     coordinator_identity,
     read_json,
+    require_confirmation,
     sha256_file,
     timestamp_slug,
     write_json,
@@ -51,11 +52,7 @@ def paths(config: AppConfig) -> dict[str, Path]:
 
 def confirm_or_cancel(message: str) -> bool:
     """Offer an explicit, default-safe proceed/cancel decision."""
-    print(f"\n{message}")
-    answer = input(
-        "Proceed with this device? Type YES to continue, or press Enter to cancel: "
-    )
-    if answer.strip() != "YES":
+    if not confirm_yes_no(message):
         print("Cancelled. No new operation was started.")
         return False
     return True
@@ -239,15 +236,13 @@ def command_baseline(config: AppConfig, args: argparse.Namespace) -> None:
     if not identity.get("ieee_address"):
         raise SafetyError("Cannot pin a coordinator without its IEEE address")
     if args.replace:
-        confirm_exact(
+        require_confirmation(
             "Replacing the coordinator baseline weakens its main safety interlock. "
-            "Continue only if this is still the original ConBee II.",
-            "REPLACE CONBEE II BASELINE",
+            "Continue only if this is still the original ConBee II."
         )
-    confirm_exact(
+    require_confirmation(
         "Pin this coordinator and Zigbee network as the only permitted Z2M baseline. "
-        "The toolkit will refuse later pairing if it changes.",
-        "BASELINE CONBEE II",
+        "The toolkit will refuse later pairing if it changes."
     )
     write_json(
         baseline_path,
@@ -378,11 +373,10 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
                 }
             else:
                 if not getattr(args, "wizard_confirmed", False):
-                    confirm_exact(
+                    require_confirmation(
                         "Open coordinator-only joining and migrate exactly this one "
                         "physical device. Ensure every other Zigbee device is powered "
-                        "normally and do not reset any other device.",
-                        f"PAIR {row.migration_id}",
+                        "normally and do not reset any other device."
                     )
                 result = z2m.supervised_pair(
                     config.safety.permit_join_seconds,
@@ -431,21 +425,18 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
                 }
             else:
                 if getattr(args, "wizard_confirmed", False):
-                    confirm_exact(
+                    require_confirmation(
                         "Confirm that this IEEE/model is the intended physical device "
-                        f"and rename it to {row.target_friendly_name!r}.",
-                        f"ACCEPT {ieee} AS {row.target_friendly_name}",
+                        f"and rename it to {row.target_friendly_name!r}."
                     )
                 else:
-                    confirm_exact(
+                    require_confirmation(
                         "Accept this newly joined device as the intended migration "
-                        "target.",
-                        f"ACCEPT {ieee}",
+                        "target."
                     )
-                    confirm_exact(
+                    require_confirmation(
                         f"Rename {ieee} to {row.target_friendly_name!r} and request "
-                        "HA discovery rename.",
-                        f"RENAME {ieee} TO {row.target_friendly_name}",
+                        "HA discovery rename."
                     )
                 rename_result = z2m.rename_device(ieee, row.target_friendly_name)
                 print(f"Rename response: {rename_result}")
@@ -557,10 +548,9 @@ def command_apply_entity_map(config: AppConfig, args: argparse.Namespace) -> Non
         if not args.apply:
             print("Dry run only. Re-run with --apply after reviewing every operation.")
             return
-        confirm_exact(
+        require_confirmation(
             "Apply the displayed entity registry renames. Each failed second rename "
-            "will trigger an attempted rollback of the old entity.",
-            f"APPLY ENTITY MAP {args.migration_id}",
+            "will trigger an attempted rollback of the old entity."
         )
         applied = []
         journal_path = (
@@ -901,10 +891,9 @@ def command_migrate(config: AppConfig, args: argparse.Namespace) -> None:
 def command_initialize(config: AppConfig, _args: argparse.Namespace) -> None:
     """Run the one-time preparation sequence without overwriting prior work."""
     output = paths(config)
-    confirm_exact(
+    require_confirmation(
         "Confirm that a current full Home Assistant backup and a current "
-        "Phoscon/deCONZ backup have been downloaded and retained.",
-        "BACKUPS READY",
+        "Phoscon/deCONZ backup have been downloaded and retained."
     )
     command_preflight(config, argparse.Namespace())
 

@@ -10,9 +10,10 @@ It deliberately does **not**:
 - edit Home Assistant `.storage` files;
 - silently replace entity or device IDs.
 
-Every mutating operation is dry-run first or requires an exact confirmation
-phrase. The first safety step pins the current Z2M coordinator IEEE address and
-network identity. Later pairing commands stop if that identity changes.
+Every mutating operation is dry-run first or requires an explicit `Y/N`
+confirmation. Pressing Enter selects the safe default, `No`. The first safety
+step pins the current Z2M coordinator IEEE address and network identity. Later
+pairing commands stop if that identity changes.
 
 ## Prerequisites
 
@@ -69,12 +70,12 @@ Then run `migrate-next`. The wizard:
 1. Selects the first alphabetically planned device that is not yet verified or
    deliberately skipped.
 2. Shows its name, current entities, target name, status and overall progress.
-3. Lets you type `YES` to proceed or press Enter to cancel without starting.
+3. Asks for `Y/N`; `Y` proceeds and `N` or Enter cancels without starting.
 4. Resumes the last completed stage if a previous run was interrupted.
 5. Opens the short coordinator-only join window only when actually required.
 6. Asks you to confirm the interviewed IEEE/model before renaming it.
 7. Suggests entity mappings conservatively and shows them before applying.
-8. Requires a separate exact confirmation before entity IDs are changed.
+8. Requires a separate `Y/N` confirmation before entity IDs are changed.
 9. Verifies that the replacement entities are healthy and no longer deCONZ.
 10. Marks the device verified and displays the next suggested device.
 
@@ -125,8 +126,7 @@ used by Zigbee2MQTT.
 ```
 
 The command prints the coordinator IEEE address, type, serial port/adapter,
-channel, PAN ID and extended PAN ID, then requires the exact phrase
-`BASELINE CONBEE II`.
+channel, PAN ID and extended PAN ID, then requires an explicit `Y` confirmation.
 
 All later Z2M commands compare the live coordinator against this file.
 
@@ -181,7 +181,7 @@ Choose a pending migration ID from `migration-plan.csv`:
 Safety behaviour:
 
 1. The complete old device and entity list is displayed.
-2. You must type `PAIR D001`.
+2. You must answer `Y` to the pairing confirmation.
 3. The live coordinator must match the pinned ConBee II baseline.
 4. Joining opens through the coordinator only, for at most 60 seconds.
 5. Joining closes in a `finally` block even on errors.
@@ -189,7 +189,7 @@ Safety behaviour:
 7. You must confirm its IEEE address.
 8. The interview is written to disk before any later confirmation. If you stop
    here, rerunning `pair D001` resumes without opening joining again.
-9. Renaming requires another exact confirmation phrase.
+9. Renaming requires another `Y/N` confirmation.
 10. Candidate HA entities are saved for review.
 
 The physical factory reset remains manual. Only reset the device shown by the
@@ -217,7 +217,7 @@ Apply only after reviewing every line:
 ./run.sh apply-entity-map D001 --apply
 ```
 
-This requires `APPLY ENTITY MAP D001`. Only that single device is considered.
+This requires an explicit `Y` confirmation. Only that single device is considered.
 If the second rename fails, the tool attempts to restore the old deCONZ entity
 ID immediately.
 
