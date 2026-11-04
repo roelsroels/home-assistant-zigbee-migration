@@ -78,16 +78,27 @@ class HomeAssistantClient:
         command_id = self.next_id
         self.next_id += 1
         message = {"id": command_id, "type": command_type, **payload}
-        self.socket.send(json.dumps(message))
-        while True:
-            response = self._receive()
-            if response.get("id") != command_id:
-                continue
-            if not response.get("success"):
-                raise HomeAssistantError(
-                    f"{command_type} failed: {response.get('error')}"
-                )
-            return response.get("result")
+        try:
+            self.socket.send(json.dumps(message))
+            while True:
+                response = self._receive()
+                if response.get("id") != command_id:
+                    continue
+                if not response.get("success"):
+                    raise HomeAssistantError(
+                        f"{command_type} failed: {response.get('error')}"
+                    )
+                return response.get("result")
+        except HomeAssistantError:
+            raise
+        except (OSError, websocket.WebSocketException) as err:
+            self._close_safely()
+            raise HomeAssistantError(
+                "The Home Assistant WebSocket connection was lost while running "
+                f"{command_type!r}. The completed migration checkpoint is retained; "
+                "rerun the same command to resume safely. "
+                f"Original error: {err}"
+            ) from err
 
     def snapshot(self) -> dict[str, Any]:
         return {

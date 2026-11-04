@@ -90,6 +90,27 @@ class ToolkitTests(unittest.TestCase):
         self.assertIn("correct LAN or VPN", message)
         self.assertIn("No route to host", message)
 
+    def test_home_assistant_mid_session_disconnect_is_resumable(self) -> None:
+        config = SimpleNamespace(
+            websocket_url="wss://ha.example.com/api/websocket",
+            verify_tls=True,
+            token="test-token",
+        )
+        client = HomeAssistantClient(config)
+        client.socket = SimpleNamespace(
+            send=lambda _message: None,
+            recv=lambda: (_ for _ in ()).throw(
+                OSError(54, "Connection reset by peer")
+            ),
+            close=lambda: None,
+        )
+        with self.assertRaises(HomeAssistantError) as caught:
+            client.entities()
+        message = str(caught.exception)
+        self.assertIn("connection was lost", message)
+        self.assertIn("rerun the same command", message)
+        self.assertIn("Connection reset by peer", message)
+
     def test_no_command_prints_short_command_help(self) -> None:
         output = StringIO()
         with redirect_stdout(output):

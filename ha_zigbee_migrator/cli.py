@@ -704,7 +704,7 @@ def verification_is_waiting_for_unknown_states(report: dict[str, Any]) -> bool:
     )
 
 
-def command_verify(config: AppConfig, _args: argparse.Namespace) -> None:
+def command_verify(config: AppConfig, _args: argparse.Namespace) -> bool:
     output = paths(config)
     selected_map = [
         row
@@ -765,8 +765,6 @@ def command_verify(config: AppConfig, _args: argparse.Namespace) -> None:
                     next_notice = now + 30
             if report["healthy"]:
                 print("The required first readings have arrived.")
-    path = output["reports"] / f"verification-{timestamp_slug()}.json"
-    write_json(path, report)
     for item in report["results"]:
         if item.get("diagnostic_pending"):
             marker = "WARN"
@@ -781,16 +779,54 @@ def command_verify(config: AppConfig, _args: argparse.Namespace) -> None:
                 "       Diagnostic reading has not arrived yet; this does not block "
                 "migration verification."
             )
+
+    accepted_pending_states = False
+    if not report["healthy"] and verification_is_waiting_for_unknown_states(report):
+        pending_ids = [
+            item["entity_id"]
+            for item in report["results"]
+            if not item["healthy"]
+        ]
+        accepted_pending_states = confirm_yes_no(
+            "The entity mapping and MQTT ownership checks passed, but these sleepy "
+            "device readings are still unknown: "
+            + ", ".join(pending_ids)
+            + ". Mark this device verified without waiting for those first live "
+            "readings?"
+        )
+        report["pending_state_override"] = {
+            "accepted": accepted_pending_states,
+            "entity_ids": pending_ids,
+        }
+
+    path = output["reports"] / f"verification-{timestamp_slug()}.json"
+    write_json(path, report)
     print(f"Verification report written to {path}")
-    if not report["healthy"]:
-        raise SafetyError("Verification found missing, unavailable, or deCONZ entities")
+    if not report["healthy"] and not accepted_pending_states:
+        if verification_is_waiting_for_unknown_states(report):
+            print(
+                f"{_args.migration_id} remains mapped but not verified. Wake the "
+                "device and rerun the same migration command when ready."
+            )
+            return False
+        raise SafetyError(
+            "Verification found a missing, unavailable, or deCONZ entity. This "
+            "structural safety check cannot be skipped."
+        )
     all_rows = load_entity_map(output["map"])
     for row in all_rows:
         if row["migration_id"] == _args.migration_id and row["status"] == "applied":
             row["status"] = "verified"
     write_entity_map(output["map"], all_rows)
     update_plan_status(output["plan"], _args.migration_id, "verified")
-    print(f"{_args.migration_id} is now marked verified.")
+    if accepted_pending_states:
+        print(
+            f"{_args.migration_id} is now marked verified with pending live readings "
+            "recorded in the verification report."
+        )
+    else:
+        print(f"{_args.migration_id} is now marked verified.")
+    return True
 
 
 def suggest_mappings_for_device(config: AppConfig, migration_id: str) -> list[str]:
@@ -942,10 +978,16 @@ def run_device_workflow(
             return
 
     if row.status == "mapped":
-        command_verify(
+        verified = command_verify(
             config,
             argparse.Namespace(migration_id=row.migration_id),
         )
+        if not verified:
+            print(
+                f"Stopped safely at {row.migration_id}. No other device was "
+                "advanced."
+            )
+            return
 
     row = plan_row_by_id(config, migration_id)
     if row.status != "verified":

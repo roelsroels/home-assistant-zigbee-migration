@@ -104,7 +104,15 @@ After mapping, functional MQTT entities that are still `unknown` receive a
 configurable grace period (120 seconds by default) to publish their first
 measurement. Missing, `unavailable`, or deCONZ-backed entities still fail
 immediately. Set `safety.verification_grace_seconds` to a value from 0 through
-600 to adjust or disable this wait.
+600 to adjust or disable this wait. If the grace period expires and the only
+remaining issue is an `unknown` first reading, the wizard offers a final Y/N
+choice to accept the pending reading and finish the migration. That exception is
+recorded in the verification report. Missing entities, `unavailable` states, and
+deCONZ ownership can never be waived.
+
+If Home Assistant drops its WebSocket connection during a run, the toolkit now
+prints a short resumable error instead of a Python traceback. Completed pairing,
+rename, and mapping checkpoints remain on disk; rerun the same command to resume.
 
 To choose **any** particular planned device instead of accepting the next
 suggestion, pass its ID from `migration-plan.csv`:
