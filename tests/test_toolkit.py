@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from ha_zigbee_migrator.config import ConfigError, _env_name
+from ha_zigbee_migrator.ha import HomeAssistantClient, HomeAssistantError
 from ha_zigbee_migrator.cli import (
     already_has_target_name,
     build_parser,
@@ -34,6 +35,23 @@ from ha_zigbee_migrator.safety import (
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_home_assistant_route_error_is_actionable(self) -> None:
+        config = SimpleNamespace(
+            websocket_url="wss://ha.example.com/api/websocket",
+            verify_tls=True,
+            token="test-token",
+        )
+        with patch(
+            "ha_zigbee_migrator.ha.websocket.create_connection",
+            side_effect=OSError(65, "No route to host"),
+        ):
+            with self.assertRaises(HomeAssistantError) as caught:
+                with HomeAssistantClient(config):
+                    pass
+        message = str(caught.exception)
+        self.assertIn("correct LAN or VPN", message)
+        self.assertIn("No route to host", message)
+
     def test_no_command_prints_short_command_help(self) -> None:
         output = StringIO()
         with redirect_stdout(output):

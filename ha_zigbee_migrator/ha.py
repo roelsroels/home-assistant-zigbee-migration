@@ -25,26 +25,47 @@ class HomeAssistantClient:
         sslopt = None
         if not self.config.verify_tls:
             sslopt = {"cert_reqs": ssl.CERT_NONE}
-        self.socket = websocket.create_connection(
-            self.config.websocket_url,
-            timeout=20,
-            sslopt=sslopt,
-        )
-        required = self._receive()
-        if required.get("type") != "auth_required":
-            raise HomeAssistantError(f"Unexpected WebSocket greeting: {required}")
-        self.socket.send(
-            json.dumps({"type": "auth", "access_token": self.config.token})
-        )
-        result = self._receive()
-        if result.get("type") != "auth_ok":
-            raise HomeAssistantError("Home Assistant authentication failed")
-        return self
+        try:
+            self.socket = websocket.create_connection(
+                self.config.websocket_url,
+                timeout=20,
+                sslopt=sslopt,
+            )
+            required = self._receive()
+            if required.get("type") != "auth_required":
+                raise HomeAssistantError(
+                    f"Unexpected WebSocket greeting: {required}"
+                )
+            self.socket.send(
+                json.dumps({"type": "auth", "access_token": self.config.token})
+            )
+            result = self._receive()
+            if result.get("type") != "auth_ok":
+                raise HomeAssistantError("Home Assistant authentication failed")
+            return self
+        except HomeAssistantError:
+            self._close_safely()
+            raise
+        except (OSError, websocket.WebSocketException) as err:
+            self._close_safely()
+            raise HomeAssistantError(
+                "Unable to connect to the Home Assistant WebSocket at "
+                f"{self.config.websocket_url}. Check that this computer is on the "
+                "correct LAN or VPN and that Home Assistant is reachable. "
+                f"Original error: {err}"
+            ) from err
 
     def __exit__(self, *_args: object) -> None:
-        if self.socket is not None:
-            self.socket.close()
+        self._close_safely()
+
+    def _close_safely(self) -> None:
+        socket = self.socket
         self.socket = None
+        if socket is not None:
+            try:
+                socket.close()
+            except (OSError, websocket.WebSocketException):
+                pass
 
     def _receive(self) -> dict[str, Any]:
         if self.socket is None:
