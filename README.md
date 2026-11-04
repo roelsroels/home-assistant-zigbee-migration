@@ -91,6 +91,11 @@ After a new device appears, joining closes immediately while the script keeps
 waiting separately for its interview to finish.
 If the recovered device already has the requested Z2M friendly name, the rename
 stage is treated as complete instead of sending a duplicate rename request.
+If the intended device joins but its interview fails, the device is marked
+`retry` and no rename or entity mapping is attempted. Run the same migration
+command again. For sleepy battery devices, keep the device close to the
+coordinator and briefly press its wake/pair button every 2-3 seconds until the
+interview succeeds.
 
 If a mapping is ambiguous, the wizard stops at that device and identifies the
 few unresolved worksheet cells. It will not advance or guess.

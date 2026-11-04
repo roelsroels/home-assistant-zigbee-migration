@@ -164,6 +164,7 @@ class Z2MClient:
         join_deadline = time.monotonic() + seconds
         interview_deadline: float | None = None
         join_closed = False
+        interview_failed = False
 
         def eligible(ieee: Any) -> str | None:
             if not ieee:
@@ -242,6 +243,10 @@ class Z2MClient:
                     successes[ieee] = data
                     inspect_inventory()
                     break
+                if event_type == "device_interview" and data.get("status") == "failed":
+                    interview_failed = True
+                    inspect_inventory()
+                    break
                 inspect_inventory()
         finally:
             if not join_closed:
@@ -252,6 +257,20 @@ class Z2MClient:
             raise Z2MError(
                 f"A different device appeared. Expected {expected_ieee}, got "
                 f"{sorted(candidates)}. Observed events: {observed}"
+            )
+        if (
+            interview_failed
+            and expected_ieee
+            and candidates == {expected_ieee}
+            and not successes
+        ):
+            raise Z2MError(
+                f"The intended device {expected_ieee} joined, but Zigbee2MQTT "
+                "reported that its interview failed. No rename or entity mapping "
+                "was attempted. Rerun the same migration command, keep the device "
+                "close to the coordinator, and keep a sleepy battery device awake "
+                "with a brief button press every 2-3 seconds until the interview "
+                "finishes."
             )
         if len(candidates) > 1 or len(successes) != 1:
             raise Z2MError(

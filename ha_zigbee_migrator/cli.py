@@ -33,7 +33,7 @@ from .safety import (
     timestamp_slug,
     write_json,
 )
-from .z2m import Z2MClient
+from .z2m import Z2MClient, Z2MError
 
 
 def paths(config: AppConfig) -> dict[str, Path]:
@@ -431,10 +431,19 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
                         "physical device. Ensure every other Zigbee device is powered "
                         "normally and do not reset any other device."
                     )
-                result = z2m.supervised_pair(
-                    config.safety.permit_join_seconds,
-                    expected_ieee=expected_ieee,
-                )
+                try:
+                    result = z2m.supervised_pair(
+                        config.safety.permit_join_seconds,
+                        expected_ieee=expected_ieee,
+                    )
+                except Z2MError as err:
+                    update_plan_status(
+                        output["plan"],
+                        row.migration_id,
+                        "retry",
+                        f"Pair/interview retry required: {str(err)[:500]}",
+                    )
+                    raise
             result_path = (
                 output["pair_results"]
                 / f"{row.migration_id}-{timestamp_slug()}.json"

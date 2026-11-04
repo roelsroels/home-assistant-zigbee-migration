@@ -18,7 +18,7 @@ from ha_zigbee_migrator.cli import (
     successful_z2m_device,
     verification_is_waiting_for_unknown_states,
 )
-from ha_zigbee_migrator.z2m import Z2MClient
+from ha_zigbee_migrator.z2m import Z2MClient, Z2MError
 from ha_zigbee_migrator.inventory import (
     backup_entity_id,
     scan_references,
@@ -251,6 +251,49 @@ class ToolkitTests(unittest.TestCase):
         result = client.supervised_pair(0.01, expected_ieee=ieee)
         self.assertEqual(result["ieee_address"], ieee)
         self.assertEqual(result["source"], "bridge/devices")
+
+    def test_failed_interview_has_immediate_recovery_instructions(self) -> None:
+        ieee = "0x00158d0000000001"
+        client = Z2MClient.__new__(Z2MClient)
+        client.config = SimpleNamespace(base_topic="zigbee2mqtt")
+        client.events = Queue()
+        client.messages = {}
+        client.client = SimpleNamespace(subscribe=lambda _topic: None)
+
+        def retained(_self: Z2MClient, _suffix: str) -> list[dict[str, object]]:
+            return []
+
+        def request(
+            self: Z2MClient, _path: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            if payload.get("time"):
+                self.events.put(
+                    {
+                        "type": "device_joined",
+                        "data": {"ieee_address": ieee},
+                    }
+                )
+                self.events.put(
+                    {
+                        "type": "device_interview",
+                        "data": {"ieee_address": ieee, "status": "failed"},
+                    }
+                )
+            return {}
+
+        client.retained = MethodType(retained, client)
+        client.request = MethodType(request, client)
+        with self.assertRaises(Z2MError) as caught:
+            client.supervised_pair(
+                0.1,
+                expected_ieee=ieee,
+                interview_timeout=10,
+            )
+        message = str(caught.exception)
+        self.assertIn("intended device", message)
+        self.assertIn("interview failed", message)
+        self.assertIn("Rerun the same migration command", message)
+        self.assertIn("every 2-3 seconds", message)
 
     def test_specific_migration_command_parses(self) -> None:
         for migration_id in ("D001", "D020", "D127", "D999"):
