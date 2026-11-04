@@ -1,4 +1,4 @@
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from queue import Queue
@@ -10,6 +10,7 @@ from unittest.mock import patch
 from ha_zigbee_migrator.config import ConfigError, _env_name
 from ha_zigbee_migrator.ha import HomeAssistantClient, HomeAssistantError
 from ha_zigbee_migrator.cli import (
+    COMMANDS,
     already_has_target_name,
     build_parser,
     group_plan_by_progress,
@@ -121,6 +122,28 @@ class ToolkitTests(unittest.TestCase):
         self.assertIn("status", rendered)
         self.assertIn("list remaining, partial, verified, and skipped", rendered)
         self.assertIn("migrate-next", rendered)
+
+    def test_control_c_exits_cleanly_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = SimpleNamespace(
+                paths=SimpleNamespace(output_dir=Path(directory))
+            )
+            errors = StringIO()
+            with patch(
+                "ha_zigbee_migrator.cli.load_config",
+                return_value=config,
+            ), patch.dict(
+                COMMANDS,
+                {"status": lambda _config, _args: (_ for _ in ()).throw(
+                    KeyboardInterrupt()
+                )},
+            ), redirect_stderr(errors):
+                result = main(["status"])
+        self.assertEqual(result, 130)
+        rendered = errors.getvalue()
+        self.assertIn("Cancelled by user", rendered)
+        self.assertIn("joining request has been closed", rendered)
+        self.assertNotIn("Traceback", rendered)
 
     def test_status_command_parses(self) -> None:
         args = build_parser().parse_args(["status"])

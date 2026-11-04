@@ -120,6 +120,9 @@ deCONZ ownership can never be waived.
 If Home Assistant drops its WebSocket connection during a run, the toolkit now
 prints a short resumable error instead of a Python traceback. Completed pairing,
 rename, and mapping checkpoints remain on disk; rerun the same command to resume.
+Pressing Ctrl-C is also handled as a normal cancellation: coordinator joining is
+closed by the pairing cleanup, no traceback is printed, completed checkpoints
+are retained, and the command exits with the conventional status code 130.
 
 To choose **any** particular planned device instead of accepting the next
 suggestion, pass its ID from `migration-plan.csv`:

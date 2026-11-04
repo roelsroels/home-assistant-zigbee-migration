@@ -1191,6 +1191,14 @@ def main(argv: list[str] | None = None) -> int:
         config.paths.output_dir.mkdir(parents=True, exist_ok=True)
         COMMANDS[args.command](config, args)
         return 0
+    except KeyboardInterrupt:
+        print(
+            "\nCancelled by user. Any active Zigbee joining request has been "
+            "closed where possible, and completed migration checkpoints remain "
+            "available for a safe retry.",
+            file=sys.stderr,
+        )
+        return 130
     except (ConfigError, SafetyError, RuntimeError) as err:
         print(f"ERROR: {err}", file=sys.stderr)
         return 2
