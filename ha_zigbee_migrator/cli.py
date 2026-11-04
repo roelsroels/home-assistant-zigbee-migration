@@ -693,6 +693,17 @@ def command_apply_entity_map(config: AppConfig, args: argparse.Namespace) -> Non
     print(f"Applied {len(applied)} mappings; durable journal: {journal_path}")
 
 
+def verification_is_waiting_for_unknown_states(report: dict[str, Any]) -> bool:
+    """Return whether every blocking result is an MQTT entity still unknown."""
+    blocking = [item for item in report["results"] if not item["healthy"]]
+    return bool(blocking) and all(
+        item.get("exists")
+        and item.get("platform") != "deconz"
+        and item.get("state") == "unknown"
+        for item in blocking
+    )
+
+
 def command_verify(config: AppConfig, _args: argparse.Namespace) -> None:
     output = paths(config)
     selected_map = [
@@ -717,6 +728,43 @@ def command_verify(config: AppConfig, _args: argparse.Namespace) -> None:
         report = verify_expected_entities(
             ha.entities(), ha.states(), selected_map
         )
+        grace_seconds = config.safety.verification_grace_seconds
+        if grace_seconds and verification_is_waiting_for_unknown_states(report):
+            waiting_ids = [
+                item["entity_id"]
+                for item in report["results"]
+                if not item["healthy"]
+            ]
+            print(
+                f"Waiting up to {grace_seconds} seconds for first readings from: "
+                + ", ".join(waiting_ids)
+            )
+            print(
+                "For a sleepy battery device, briefly press its wake/pair button "
+                "once if the readings do not arrive. Do not factory-reset it."
+            )
+            deadline = time.monotonic() + grace_seconds
+            next_notice = time.monotonic() + 30
+            while verification_is_waiting_for_unknown_states(report):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(5, remaining))
+                report = verify_expected_entities(
+                    ha.entities(), ha.states(), selected_map
+                )
+                now = time.monotonic()
+                if (
+                    verification_is_waiting_for_unknown_states(report)
+                    and now >= next_notice
+                ):
+                    print(
+                        "Still waiting for first readings "
+                        f"({max(0, round(deadline - now))} seconds remaining)..."
+                    )
+                    next_notice = now + 30
+            if report["healthy"]:
+                print("The required first readings have arrived.")
     path = output["reports"] / f"verification-{timestamp_slug()}.json"
     write_json(path, report)
     for item in report["results"]:

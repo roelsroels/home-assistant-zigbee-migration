@@ -16,6 +16,7 @@ from ha_zigbee_migrator.cli import (
     main,
     normalize_ieee,
     successful_z2m_device,
+    verification_is_waiting_for_unknown_states,
 )
 from ha_zigbee_migrator.z2m import Z2MClient
 from ha_zigbee_migrator.inventory import (
@@ -35,6 +36,43 @@ from ha_zigbee_migrator.safety import (
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_verification_waits_only_for_unknown_mqtt_states(self) -> None:
+        unknown = {
+            "results": [
+                {
+                    "entity_id": "sensor.temperature",
+                    "exists": True,
+                    "platform": "mqtt",
+                    "state": "unknown",
+                    "healthy": False,
+                }
+            ],
+            "healthy": False,
+        }
+        self.assertTrue(verification_is_waiting_for_unknown_states(unknown))
+
+        for state, exists, platform in (
+            ("unavailable", True, "mqtt"),
+            (None, False, None),
+            ("unknown", True, "deconz"),
+        ):
+            with self.subTest(state=state, exists=exists, platform=platform):
+                report = {
+                    "results": [
+                        {
+                            "entity_id": "sensor.temperature",
+                            "exists": exists,
+                            "platform": platform,
+                            "state": state,
+                            "healthy": False,
+                        }
+                    ],
+                    "healthy": False,
+                }
+                self.assertFalse(
+                    verification_is_waiting_for_unknown_states(report)
+                )
+
     def test_home_assistant_route_error_is_actionable(self) -> None:
         config = SimpleNamespace(
             websocket_url="wss://ha.example.com/api/websocket",

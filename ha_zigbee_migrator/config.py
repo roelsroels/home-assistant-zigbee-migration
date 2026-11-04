@@ -48,6 +48,7 @@ class PathsConfig:
 @dataclass(frozen=True)
 class SafetyConfig:
     permit_join_seconds: int
+    verification_grace_seconds: int
     expected_coordinator_type_contains: str
 
 
@@ -115,6 +116,11 @@ def load_config(path: str | Path) -> AppConfig:
     permit_seconds = int(safety_raw.get("permit_join_seconds", 60))
     if permit_seconds < 15 or permit_seconds > 120:
         raise ConfigError("permit_join_seconds must be between 15 and 120")
+    verification_grace_seconds = int(
+        safety_raw.get("verification_grace_seconds", 120)
+    )
+    if verification_grace_seconds < 0 or verification_grace_seconds > 600:
+        raise ConfigError("verification_grace_seconds must be between 0 and 600")
 
     return AppConfig(
         home_assistant=HomeAssistantConfig(
@@ -136,6 +142,7 @@ def load_config(path: str | Path) -> AppConfig:
         ),
         safety=SafetyConfig(
             permit_join_seconds=permit_seconds,
+            verification_grace_seconds=verification_grace_seconds,
             expected_coordinator_type_contains=str(
                 safety_raw.get("expected_coordinator_type_contains", "ConBee2")
             ),

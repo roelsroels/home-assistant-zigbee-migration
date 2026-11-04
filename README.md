@@ -100,6 +100,12 @@ many hours to arrive, is reported as a warning and does not block verification
 when the device's functional entities are healthy. An `unavailable` diagnostic
 entity still blocks verification.
 
+After mapping, functional MQTT entities that are still `unknown` receive a
+configurable grace period (120 seconds by default) to publish their first
+measurement. Missing, `unavailable`, or deCONZ-backed entities still fail
+immediately. Set `safety.verification_grace_seconds` to a value from 0 through
+600 to adjust or disable this wait.
+
 To choose **any** particular planned device instead of accepting the next
 suggestion, pass its ID from `migration-plan.csv`:
 

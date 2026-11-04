@@ -20,4 +20,6 @@ home_assistant_config = ""
 [safety]
 # Pairing is deliberately short and coordinator-only by default.
 permit_join_seconds = 60
+# Allow sleepy devices time to publish their first functional measurements.
+verification_grace_seconds = 120
 expected_coordinator_type_contains = "ConBee2"
