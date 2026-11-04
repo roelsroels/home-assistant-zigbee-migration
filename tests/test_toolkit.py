@@ -327,6 +327,40 @@ class ToolkitTests(unittest.TestCase):
         )
         self.assertEqual(unresolved, [])
 
+    def test_mapping_uses_unique_home_assistant_collision_suffix(self) -> None:
+        old = [
+            {
+                "entity_id": "switch.tablet_outlet",
+                "original_name": None,
+            }
+        ]
+        new = [
+            {
+                "entity_id": "switch.tablet_outlet_2",
+                "original_name": None,
+            },
+            {
+                "entity_id": "switch.tablet_outlet_child_lock",
+                "original_name": "Child lock",
+            },
+        ]
+        suggestions, unresolved = suggest_entity_mappings(old, new)
+        self.assertEqual(
+            suggestions["switch.tablet_outlet"][0],
+            "switch.tablet_outlet_2",
+        )
+        self.assertEqual(unresolved, [])
+
+    def test_mapping_does_not_guess_between_collision_suffixes(self) -> None:
+        old = [{"entity_id": "switch.outlet", "original_name": None}]
+        new = [
+            {"entity_id": "switch.outlet_2", "original_name": None},
+            {"entity_id": "switch.outlet_3", "original_name": None},
+        ]
+        suggestions, unresolved = suggest_entity_mappings(old, new)
+        self.assertEqual(suggestions, {})
+        self.assertEqual(unresolved, ["switch.outlet"])
+
     def test_mapping_uses_unique_device_classes(self) -> None:
         old = [
             {

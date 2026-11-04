@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any, Iterable
 
 from .safety import slugify, write_json
@@ -211,9 +212,10 @@ def suggest_entity_mappings(
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """Return conservative one-to-one entity suggestions and unresolved old IDs.
 
-    Suggestions are made only for mutually unique original names, mutually unique
-    trailing entity-ID tokens, or the sole remaining entity in a domain. This is
-    intentionally conservative: a missing suggestion is safer than a wrong rename.
+    Suggestions are made only for a unique Home Assistant collision suffix,
+    mutually unique original names, mutually unique trailing entity-ID tokens, or
+    the sole remaining entity in a domain. This is intentionally conservative: a
+    missing suggestion is safer than a wrong rename.
     """
     old_by_id = {item["entity_id"]: item for item in old_entities}
     new_by_id = {item["entity_id"]: item for item in new_entities}
@@ -268,6 +270,24 @@ def suggest_entity_mappings(
             suggestions[old_id] = (new_id, reason)
             unmatched_old.remove(old_id)
             unmatched_new.remove(new_id)
+
+    collision_assignments: list[tuple[str, str]] = []
+    for old_id in sorted(unmatched_old):
+        pattern = re.compile(rf"^{re.escape(old_id)}_([2-9][0-9]*)$")
+        candidates = [
+            new_id for new_id in unmatched_new if pattern.fullmatch(new_id)
+        ]
+        if len(candidates) == 1:
+            collision_assignments.append((old_id, candidates[0]))
+    for old_id, new_id in collision_assignments:
+        if old_id not in unmatched_old or new_id not in unmatched_new:
+            continue
+        suggestions[old_id] = (
+            new_id,
+            "Home Assistant collision suffix of original entity ID",
+        )
+        unmatched_old.remove(old_id)
+        unmatched_new.remove(new_id)
 
     assign_unique(device_class, "same unique device class")
     assign_unique(normalized_original, "same unique original name")
