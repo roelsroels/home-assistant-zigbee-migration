@@ -295,6 +295,81 @@ class ToolkitTests(unittest.TestCase):
         self.assertIn("Rerun the same migration command", message)
         self.assertIn("every 2-3 seconds", message)
 
+    def test_stale_failed_inventory_does_not_become_a_fresh_candidate(self) -> None:
+        ieee = "0x00158d0000000001"
+        failed_device = {
+            "ieee_address": ieee,
+            "friendly_name": ieee,
+            "interview_completed": False,
+            "interview_state": "FAILED",
+            "interviewing": False,
+            "network_address": 12345,
+            "supported": False,
+        }
+        client = Z2MClient.__new__(Z2MClient)
+        client.config = SimpleNamespace(base_topic="zigbee2mqtt")
+        client.events = Queue()
+        client.messages = {
+            "zigbee2mqtt/bridge/devices": [failed_device.copy()]
+        }
+        client.client = SimpleNamespace(subscribe=lambda _topic: None)
+
+        def retained(_self: Z2MClient, _suffix: str) -> list[dict[str, object]]:
+            return [failed_device.copy()]
+
+        client.retained = MethodType(retained, client)
+        client.request = MethodType(
+            lambda _self, _path, _payload: {},
+            client,
+        )
+        with self.assertRaises(Z2MError) as caught:
+            client.supervised_pair(0.01, expected_ieee=ieee)
+        message = str(caught.exception)
+        self.assertIn("No fresh device join or interview", message)
+        self.assertIn("ignored during retries", message)
+
+    def test_changed_retry_inventory_can_recover_a_missed_success_event(self) -> None:
+        ieee = "0x00158d0000000001"
+        failed_device = {
+            "ieee_address": ieee,
+            "friendly_name": ieee,
+            "interview_completed": False,
+            "interview_state": "FAILED",
+            "network_address": 12345,
+            "supported": False,
+        }
+        client = Z2MClient.__new__(Z2MClient)
+        client.config = SimpleNamespace(base_topic="zigbee2mqtt")
+        client.events = Queue()
+        client.messages = {
+            "zigbee2mqtt/bridge/devices": [failed_device.copy()]
+        }
+        client.client = SimpleNamespace(subscribe=lambda _topic: None)
+
+        def retained(_self: Z2MClient, _suffix: str) -> list[dict[str, object]]:
+            return [failed_device.copy()]
+
+        def request(
+            self: Z2MClient, _path: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            if payload.get("time"):
+                self.messages["zigbee2mqtt/bridge/devices"] = [
+                    {
+                        **failed_device,
+                        "interview_completed": True,
+                        "interview_state": "SUCCESSFUL",
+                        "supported": True,
+                        "definition": {"model": "WSDCGQ11LM"},
+                    }
+                ]
+            return {}
+
+        client.retained = MethodType(retained, client)
+        client.request = MethodType(request, client)
+        result = client.supervised_pair(0.01, expected_ieee=ieee)
+        self.assertEqual(result["ieee_address"], ieee)
+        self.assertEqual(result["source"], "bridge/devices")
+
     def test_specific_migration_command_parses(self) -> None:
         for migration_id in ("D001", "D020", "D127", "D999"):
             with self.subTest(migration_id=migration_id):

@@ -138,10 +138,27 @@ class Z2MClient:
         """
         devices_topic = f"{self.base}/bridge/devices"
         initial_devices = self.retained("bridge/devices")
-        existing = {
-            str(device.get("ieee_address")).lower()
+
+        def inventory_fingerprint(device: dict[str, Any]) -> tuple[Any, ...]:
+            """Capture fields that change when a retained device is re-interviewed."""
+            return (
+                str(device.get("interview_state", "")).upper(),
+                bool(device.get("interview_completed")),
+                bool(device.get("interviewing")),
+                device.get("network_address"),
+                device.get("supported"),
+                device.get("model_id"),
+            )
+
+        initial_by_ieee = {
+            str(device.get("ieee_address")).lower(): device
             for device in initial_devices
             if isinstance(device, dict) and device.get("ieee_address")
+        }
+        existing = set(initial_by_ieee)
+        initial_fingerprints = {
+            ieee: inventory_fingerprint(device)
+            for ieee, device in initial_by_ieee.items()
         }
         expected_ieee = expected_ieee.lower() if expected_ieee else None
         while not self.events.empty():
@@ -165,8 +182,9 @@ class Z2MClient:
         interview_deadline: float | None = None
         join_closed = False
         interview_failed = False
+        fresh_event_ieees: set[str] = set()
 
-        def eligible(ieee: Any) -> str | None:
+        def eligible_event(ieee: Any) -> str | None:
             if not ieee:
                 return None
             normalized = str(ieee).lower()
@@ -181,13 +199,24 @@ class Z2MClient:
             for device in inventory:
                 if not isinstance(device, dict):
                     continue
-                ieee = eligible(device.get("ieee_address"))
-                if not ieee:
+                raw_ieee = device.get("ieee_address")
+                if not raw_ieee:
                     continue
-                candidates.add(ieee)
-                if device.get("interview_completed") or str(
+                ieee = str(raw_ieee).lower()
+                successful = bool(device.get("interview_completed")) or str(
                     device.get("interview_state", "")
-                ).upper() == "SUCCESSFUL":
+                ).upper() == "SUCCESSFUL"
+                if ieee in existing:
+                    changed = (
+                        inventory_fingerprint(device)
+                        != initial_fingerprints.get(ieee)
+                    )
+                    if ieee != expected_ieee or not (
+                        successful or changed or ieee in fresh_event_ieees
+                    ):
+                        continue
+                candidates.add(ieee)
+                if successful:
                     successes[ieee] = {
                         "ieee_address": ieee,
                         "friendly_name": device.get("friendly_name", ieee),
@@ -220,7 +249,7 @@ class Z2MClient:
                     continue
                 event_type = event.get("type")
                 data = event.get("data") or {}
-                ieee = eligible(data.get("ieee_address"))
+                ieee = eligible_event(data.get("ieee_address"))
                 observed.append(
                     {
                         "type": event_type,
@@ -230,6 +259,7 @@ class Z2MClient:
                 )
                 if event_type not in {"device_joined", "device_interview"} or not ieee:
                     continue
+                fresh_event_ieees.add(ieee)
                 candidates.add(ieee)
                 if not join_closed:
                     self.close_join()
@@ -271,6 +301,14 @@ class Z2MClient:
                 "close to the coordinator, and keep a sleepy battery device awake "
                 "with a brief button press every 2-3 seconds until the interview "
                 "finishes."
+            )
+        if not candidates and not observed:
+            raise Z2MError(
+                "No fresh device join or interview was observed. An unchanged "
+                "failed device entry already retained by Zigbee2MQTT is ignored "
+                "during retries so it cannot close joining prematurely. Rerun the "
+                "same migration command and begin the factory reset only after the "
+                "script says joining is open."
             )
         if len(candidates) > 1 or len(successes) != 1:
             raise Z2MError(

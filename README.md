@@ -95,7 +95,9 @@ If the intended device joins but its interview fails, the device is marked
 `retry` and no rename or entity mapping is attempted. Run the same migration
 command again. For sleepy battery devices, keep the device close to the
 coordinator and briefly press its wake/pair button every 2-3 seconds until the
-interview succeeds.
+interview succeeds. On a retry, an unchanged failed entry already retained in
+Zigbee2MQTT is ignored; only a fresh join/interview event, changed inventory
+state, or successful interview can close joining and advance the migration.
 
 If a mapping is ambiguous, the wizard stops at that device and identifies the
 few unresolved worksheet cells. It will not advance or guess.
