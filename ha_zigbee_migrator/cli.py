@@ -101,6 +101,59 @@ def print_suggested_device(
         print(f"    - {entity_id}")
 
 
+def group_plan_by_progress(plan: list[Any]) -> dict[str, list[Any]]:
+    """Split plan rows into mutually exclusive user-facing progress groups."""
+    groups: dict[str, list[Any]] = {
+        "pending": [],
+        "partial": [],
+        "verified": [],
+        "skipped": [],
+    }
+    for row in plan:
+        if row.status == "verified":
+            groups["verified"].append(row)
+        elif row.status == "skip":
+            groups["skipped"].append(row)
+        elif row.status == "pending":
+            groups["pending"].append(row)
+        else:
+            groups["partial"].append(row)
+    return groups
+
+
+def command_status(config: AppConfig, _args: argparse.Namespace) -> None:
+    """Show local migration progress without contacting HA, MQTT, or deCONZ."""
+    plan_path = paths(config)["plan"]
+    if not plan_path.exists():
+        raise SafetyError("No migration plan exists. Run ./run.sh initialize first.")
+
+    plan = load_plan(plan_path)
+    groups = group_plan_by_progress(plan)
+    remaining = len(groups["pending"]) + len(groups["partial"])
+    print("Migration status")
+    print(f"  Total planned:          {len(plan)}")
+    print(f"  Remaining to migrate:   {remaining}")
+    print(f"  Finished successfully:  {len(groups['verified'])}")
+    print(f"  Deliberately skipped:   {len(groups['skipped'])}")
+
+    sections = (
+        ("Remaining — not started", groups["pending"]),
+        ("Partly completed — resume required", groups["partial"]),
+        ("Finished successfully", groups["verified"]),
+        ("Deliberately skipped", groups["skipped"]),
+    )
+    for heading, rows in sections:
+        print(f"\n{heading} ({len(rows)}):")
+        if not rows:
+            print("  (none)")
+            continue
+        for row in rows:
+            print(
+                f"  {row.migration_id}  {row.old_device_name} "
+                f"[status: {row.status}; target: {row.target_friendly_name}]"
+            )
+
+
 def normalize_ieee(value: str) -> str:
     """Normalize HA colon-separated Zigbee addresses to Z2M's 0x form."""
     compact = value.lower().replace(":", "").replace("-", "")
@@ -938,40 +991,83 @@ def command_initialize(config: AppConfig, _args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        prog="./run.sh",
         description=(
             "Supervised migration of devices from deCONZ to the existing Z2M "
             "network. This tool never migrates or changes the coordinator."
         )
     )
-    parser.add_argument("--config", default="config.toml")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("initialize")
-    subparsers.add_parser("preflight")
-    subparsers.add_parser("migrate-next")
-    migrate = subparsers.add_parser("migrate")
+    parser.add_argument(
+        "--config",
+        default="config.toml",
+        help="configuration file (default: config.toml)",
+    )
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
+    subparsers.add_parser(
+        "initialize",
+        help="prepare backups, baseline, inventory, and migration plan",
+    )
+    subparsers.add_parser(
+        "status",
+        help="list remaining, partial, verified, and skipped devices",
+    )
+    subparsers.add_parser(
+        "preflight",
+        help="check connectivity and coordinator without changing anything",
+    )
+    subparsers.add_parser(
+        "migrate-next",
+        help="migrate or resume the next unfinished device",
+    )
+    migrate = subparsers.add_parser(
+        "migrate",
+        help="migrate or resume a specific DXXX device",
+    )
     migrate.add_argument(
         "migration_id",
         metavar="DXXX",
         help="any migration ID present in migration-plan.csv (for example D001)",
     )
-    baseline = subparsers.add_parser("baseline")
+    baseline = subparsers.add_parser(
+        "baseline",
+        help="pin the current ConBee II and Zigbee network identity",
+    )
     baseline.add_argument("--replace", action="store_true")
-    snapshot = subparsers.add_parser("snapshot")
+    snapshot = subparsers.add_parser(
+        "snapshot",
+        help="export the current HA and Z2M inventory",
+    )
     snapshot.add_argument("--create-plan", action="store_true")
-    subparsers.add_parser("audit")
-    subparsers.add_parser("backup-z2m")
-    pair = subparsers.add_parser("pair")
+    subparsers.add_parser(
+        "audit",
+        help="scan configuration references without editing files",
+    )
+    subparsers.add_parser(
+        "backup-z2m",
+        help="download and checksum a Zigbee2MQTT data backup",
+    )
+    pair = subparsers.add_parser(
+        "pair",
+        help="run the guarded pairing stage for one DXXX device",
+    )
     pair.add_argument("migration_id")
-    apply_map = subparsers.add_parser("apply-entity-map")
+    apply_map = subparsers.add_parser(
+        "apply-entity-map",
+        help="preview or apply entity-ID mappings for one DXXX device",
+    )
     apply_map.add_argument("migration_id")
     apply_map.add_argument("--apply", action="store_true")
-    verify = subparsers.add_parser("verify")
+    verify = subparsers.add_parser(
+        "verify",
+        help="verify one mapped DXXX device and mark it successful",
+    )
     verify.add_argument("migration_id")
     return parser
 
 
 COMMANDS = {
     "initialize": command_initialize,
+    "status": command_status,
     "preflight": command_preflight,
     "migrate-next": command_migrate_next,
     "migrate": command_migrate,
@@ -988,6 +1084,9 @@ COMMANDS = {
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_help()
+        return 0
     try:
         config = load_config(args.config)
         config.paths.output_dir.mkdir(parents=True, exist_ok=True)

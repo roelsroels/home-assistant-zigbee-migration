@@ -1,3 +1,5 @@
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from queue import Queue
 from types import MethodType, SimpleNamespace
@@ -9,6 +11,8 @@ from ha_zigbee_migrator.config import ConfigError, _env_name
 from ha_zigbee_migrator.cli import (
     already_has_target_name,
     build_parser,
+    group_plan_by_progress,
+    main,
     normalize_ieee,
     successful_z2m_device,
 )
@@ -30,6 +34,37 @@ from ha_zigbee_migrator.safety import (
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_no_command_prints_short_command_help(self) -> None:
+        output = StringIO()
+        with redirect_stdout(output):
+            result = main([])
+        self.assertEqual(result, 0)
+        rendered = output.getvalue()
+        self.assertIn("usage: ./run.sh", rendered)
+        self.assertIn("status", rendered)
+        self.assertIn("list remaining, partial, verified, and skipped", rendered)
+        self.assertIn("migrate-next", rendered)
+
+    def test_status_command_parses(self) -> None:
+        args = build_parser().parse_args(["status"])
+        self.assertEqual(args.command, "status")
+
+    def test_plan_progress_groups_are_mutually_exclusive(self) -> None:
+        rows = [
+            SimpleNamespace(status="pending"),
+            SimpleNamespace(status="interviewed"),
+            SimpleNamespace(status="mapped"),
+            SimpleNamespace(status="retry"),
+            SimpleNamespace(status="verified"),
+            SimpleNamespace(status="skip"),
+        ]
+        groups = group_plan_by_progress(rows)
+        self.assertEqual(len(groups["pending"]), 1)
+        self.assertEqual(len(groups["partial"]), 3)
+        self.assertEqual(len(groups["verified"]), 1)
+        self.assertEqual(len(groups["skipped"]), 1)
+        self.assertEqual(sum(len(group) for group in groups.values()), len(rows))
+
     def test_yes_no_confirmation_accepts_short_and_long_yes(self) -> None:
         for answer in ("y", "Y", "yes", "YES"):
             with self.subTest(answer=answer), patch(

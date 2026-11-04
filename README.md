@@ -57,8 +57,12 @@ After configuring the connection and exporting the credentials, normal use is:
 
 ```bash
 ./run.sh initialize
+./run.sh status
 ./run.sh migrate-next
 ```
+
+Run `./run.sh` without a command at any time to display a concise list of all
+available commands and their purpose.
 
 Run `initialize` once. It checks connectivity, confirms the external backups,
 pins the current ConBee II, downloads the Z2M data backup, creates the inventory
@@ -107,6 +111,17 @@ For example, `./run.sh migrate D001`, `./run.sh migrate D020`, or
 `./run.sh migrate D127`. The ID is not hard-coded. The command runs or resumes
 the requested row through the same guarded workflow. Other incomplete rows keep
 their existing status and are not marked skipped.
+
+To inspect the complete local migration tracker without contacting Home
+Assistant, MQTT, or deCONZ, run:
+
+```bash
+./run.sh status
+```
+
+It groups devices as not started, partly completed and resumable, successfully
+verified, or deliberately skipped. The summary count for remaining devices
+includes both not-started and partly completed devices.
 
 ## Individual commands for inspection and recovery
 
@@ -252,6 +267,7 @@ Only then move to the next device.
 
 ```text
 initialize                One-time guarded preparation; preserves existing work
+status                    List remaining, partial, verified, and skipped devices
 migrate-next              Select, migrate, map and verify the next device
 migrate DXXX              Migrate or resume any explicitly selected plan ID
 preflight                 Read-only connectivity and coordinator check
