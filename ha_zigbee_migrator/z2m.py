@@ -128,6 +128,7 @@ class Z2MClient:
         seconds: int,
         expected_ieee: str | None = None,
         interview_timeout: int = 90,
+        join_via: str = "coordinator",
     ) -> dict[str, Any]:
         """Join one device and keep watching after joining closes.
 
@@ -167,12 +168,24 @@ class Z2MClient:
             except Empty:
                 break
         self.client.subscribe(f"{self.base}/bridge/event")
-        self.request(
-            "permit_join",
-            {"time": seconds, "device": "coordinator"},
+        join_via = join_via.strip()
+        if not join_via:
+            raise Z2MError("join_via cannot be empty")
+        permit_payload: dict[str, Any] = {"time": seconds}
+        if join_via.casefold() != "all":
+            permit_payload["device"] = (
+                "coordinator"
+                if join_via.casefold() == "coordinator"
+                else join_via
+            )
+        self.request("permit_join", permit_payload)
+        join_description = (
+            "all available coordinator/router paths"
+            if join_via.casefold() == "all"
+            else join_via
         )
         print(
-            f"Joining is open through the coordinator for {seconds} seconds. "
+            f"Joining is open through {join_description} for {seconds} seconds. "
             "Factory-reset exactly one intended device now."
         )
         successes: dict[str, dict[str, Any]] = {}
@@ -303,12 +316,24 @@ class Z2MClient:
                 "finishes."
             )
         if not candidates and not observed:
+            if expected_ieee in existing:
+                detail = (
+                    "An unchanged failed device entry already retained by "
+                    "Zigbee2MQTT was correctly ignored so it could not close "
+                    "joining prematurely."
+                )
+            else:
+                detail = (
+                    "The planned device never appeared in Zigbee2MQTT's inventory, "
+                    "so this is a reset, range, or join-path problem rather than a "
+                    "missed script event."
+                )
             raise Z2MError(
-                "No fresh device join or interview was observed. An unchanged "
-                "failed device entry already retained by Zigbee2MQTT is ignored "
-                "during retries so it cannot close joining prematurely. Rerun the "
-                "same migration command and begin the factory reset only after the "
-                "script says joining is open."
+                "No fresh device join or interview was observed. "
+                + detail
+                + " Rerun the same migration command and begin the factory reset "
+                "only after the script says joining is open. If the device is not "
+                "close to the coordinator, select a nearby router with --join-via."
             )
         if len(candidates) > 1 or len(successes) != 1:
             raise Z2MError(

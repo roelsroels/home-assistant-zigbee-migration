@@ -99,6 +99,24 @@ interview succeeds. On a retry, an unchanged failed entry already retained in
 Zigbee2MQTT is ignored; only a fresh join/interview event, changed inventory
 state, or successful interview can close joining and advance the migration.
 
+Coordinator-only joining remains the default. If a device cannot be brought
+close to the coordinator, list the already migrated mains-powered routers:
+
+```bash
+./run.sh join-routers
+```
+
+Then select one nearby router by its exact Z2M friendly name:
+
+```bash
+./run.sh migrate D024 --join-via "nearby router name"
+```
+
+The wizard requires an additional Y/N confirmation for router-assisted joining.
+This changes only the temporary pairing path; the pinned coordinator and network
+identity remain unchanged. `--join-via all` is also supported but is broader and
+should be used only when a specific nearby router is not known.
+
 If a mapping is ambiguous, the wizard stops at that device and identifies the
 few unresolved worksheet cells. It will not advance or guess.
 

@@ -275,6 +275,54 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(result["ieee_address"], ieee)
         self.assertEqual(result["source"], "bridge/devices")
 
+    def test_pairing_join_path_is_sent_to_z2m(self) -> None:
+        ieee = "0x00158d0000000001"
+        for join_via, expected_device in (
+            ("coordinator", "coordinator"),
+            ("nearby_router", "nearby_router"),
+            ("all", None),
+        ):
+            with self.subTest(join_via=join_via):
+                client = Z2MClient.__new__(Z2MClient)
+                client.config = SimpleNamespace(base_topic="zigbee2mqtt")
+                client.events = Queue()
+                client.messages = {}
+                client.client = SimpleNamespace(subscribe=lambda _topic: None)
+                opening_payloads: list[dict[str, object]] = []
+
+                def retained(
+                    _self: Z2MClient, _suffix: str
+                ) -> list[dict[str, object]]:
+                    return []
+
+                def request(
+                    self: Z2MClient, _path: str, payload: dict[str, object]
+                ) -> dict[str, object]:
+                    if payload.get("time"):
+                        opening_payloads.append(payload.copy())
+                        self.messages["zigbee2mqtt/bridge/devices"] = [
+                            {
+                                "ieee_address": ieee,
+                                "friendly_name": ieee,
+                                "interview_completed": True,
+                                "interview_state": "SUCCESSFUL",
+                                "supported": True,
+                                "definition": {"model": "TS011F"},
+                            }
+                        ]
+                    return {}
+
+                client.retained = MethodType(retained, client)
+                client.request = MethodType(request, client)
+                result = client.supervised_pair(
+                    0.01,
+                    expected_ieee=ieee,
+                    join_via=join_via,
+                )
+                self.assertEqual(result["ieee_address"], ieee)
+                self.assertEqual(len(opening_payloads), 1)
+                self.assertEqual(opening_payloads[0].get("device"), expected_device)
+
     def test_failed_interview_has_immediate_recovery_instructions(self) -> None:
         ieee = "0x00158d0000000001"
         client = Z2MClient.__new__(Z2MClient)
@@ -349,7 +397,8 @@ class ToolkitTests(unittest.TestCase):
             client.supervised_pair(0.01, expected_ieee=ieee)
         message = str(caught.exception)
         self.assertIn("No fresh device join or interview", message)
-        self.assertIn("ignored during retries", message)
+        self.assertIn("correctly ignored", message)
+        self.assertIn("could not close joining prematurely", message)
 
     def test_changed_retry_inventory_can_recover_a_missed_success_event(self) -> None:
         ieee = "0x00158d0000000001"
@@ -399,6 +448,17 @@ class ToolkitTests(unittest.TestCase):
                 args = build_parser().parse_args(["migrate", migration_id])
                 self.assertEqual(args.command, "migrate")
                 self.assertEqual(args.migration_id, migration_id)
+
+    def test_specific_migration_can_select_join_router(self) -> None:
+        args = build_parser().parse_args(
+            ["migrate", "D024", "--join-via", "boiler_router"]
+        )
+        self.assertEqual(args.migration_id, "D024")
+        self.assertEqual(args.join_via, "boiler_router")
+
+    def test_join_routers_command_parses(self) -> None:
+        args = build_parser().parse_args(["join-routers"])
+        self.assertEqual(args.command, "join-routers")
 
     def test_secret_is_rejected_as_environment_variable_name(self) -> None:
         with self.assertRaises(ConfigError):

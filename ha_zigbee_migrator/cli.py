@@ -154,6 +154,36 @@ def command_status(config: AppConfig, _args: argparse.Namespace) -> None:
             )
 
 
+def command_join_routers(config: AppConfig, _args: argparse.Namespace) -> None:
+    """List Z2M routers that can be selected as a pairing path."""
+    with Z2MClient(config.mqtt) as z2m:
+        require_baseline(config, z2m)
+        devices = z2m.retained("bridge/devices")
+    routers = sorted(
+        (
+            device
+            for device in devices
+            if isinstance(device, dict) and device.get("type") == "Router"
+        ),
+        key=lambda device: str(device.get("friendly_name", "")).casefold(),
+    )
+    print("Available Zigbee2MQTT pairing routers:")
+    if not routers:
+        print("  (none)")
+        return
+    for device in routers:
+        definition = device.get("definition") or {}
+        description = definition.get("description") or "unknown device"
+        print(
+            f"  {device.get('friendly_name')}  "
+            f"[{device.get('ieee_address')}; {description}]"
+        )
+    print(
+        "\nUse one exact friendly name with: "
+        './run.sh migrate DXXX --join-via "FRIENDLY NAME"'
+    )
+
+
 def normalize_ieee(value: str) -> str:
     """Normalize HA colon-separated Zigbee addresses to Z2M's 0x form."""
     compact = value.lower().replace(":", "").replace("-", "")
@@ -425,7 +455,43 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
                     "source": "recovered from bridge/devices",
                 }
             else:
-                if not getattr(args, "wizard_confirmed", False):
+                join_via = getattr(args, "join_via", "coordinator").strip()
+                if not join_via:
+                    raise SafetyError("--join-via cannot be empty")
+                if join_via.casefold() not in {"coordinator", "all"}:
+                    matching_router = next(
+                        (
+                            device
+                            for device in bridge_devices
+                            if isinstance(device, dict)
+                            and device.get("type") == "Router"
+                            and join_via
+                            in {
+                                str(device.get("friendly_name", "")),
+                                str(device.get("ieee_address", "")),
+                            }
+                        ),
+                        None,
+                    )
+                    if matching_router is None:
+                        raise SafetyError(
+                            f"--join-via {join_via!r} is not a current Z2M router. "
+                            "Run ./run.sh join-routers and copy one exact friendly "
+                            "name."
+                        )
+                if join_via.casefold() != "coordinator":
+                    route_description = (
+                        "all available coordinator/router paths"
+                        if join_via.casefold() == "all"
+                        else f"Z2M router {join_via!r}"
+                    )
+                    require_confirmation(
+                        f"Open joining through {route_description} and migrate "
+                        "exactly this one physical device. Do not reset any other "
+                        "Zigbee device. This changes only the temporary join path, "
+                        "not the coordinator."
+                    )
+                elif not getattr(args, "wizard_confirmed", False):
                     require_confirmation(
                         "Open coordinator-only joining and migrate exactly this one "
                         "physical device. Ensure every other Zigbee device is powered "
@@ -435,6 +501,7 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
                     result = z2m.supervised_pair(
                         config.safety.permit_join_seconds,
                         expected_ieee=expected_ieee,
+                        join_via=join_via,
                     )
                 except Z2MError as err:
                     update_plan_status(
@@ -935,6 +1002,7 @@ def run_device_workflow(
     row: Any,
     selection_message: str,
     resume_command: str,
+    join_via: str = "coordinator",
 ) -> None:
     """Run or resume one explicitly selected plan row through all safe stages."""
     if row.status == "verified":
@@ -960,6 +1028,7 @@ def run_device_workflow(
             argparse.Namespace(
                 migration_id=row.migration_id,
                 wizard_confirmed=True,
+                join_via=join_via,
             ),
         )
         row = plan_row_by_id(config, migration_id)
@@ -1013,7 +1082,7 @@ def run_device_workflow(
         print_suggested_device(config, next_row)
 
 
-def command_migrate_next(config: AppConfig, _args: argparse.Namespace) -> None:
+def command_migrate_next(config: AppConfig, args: argparse.Namespace) -> None:
     """Select and run the first incomplete device."""
     row = next_incomplete_row(config)
     if row is None:
@@ -1025,6 +1094,7 @@ def command_migrate_next(config: AppConfig, _args: argparse.Namespace) -> None:
         "The wizard selected the first incomplete plan row. It will not select a "
         "later device until this one verifies successfully.",
         "./run.sh migrate-next",
+        join_via=args.join_via,
     )
 
 
@@ -1037,6 +1107,7 @@ def command_migrate(config: AppConfig, args: argparse.Namespace) -> None:
         f"You explicitly selected {row.migration_id}. Other unfinished rows will "
         "remain unchanged.",
         f"./run.sh migrate {row.migration_id}",
+        join_via=args.join_via,
     )
 
 
@@ -1111,12 +1182,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="list remaining, partial, verified, and skipped devices",
     )
     subparsers.add_parser(
+        "join-routers",
+        help="list Z2M routers available for router-assisted pairing",
+    )
+    subparsers.add_parser(
         "preflight",
         help="check connectivity and coordinator without changing anything",
     )
-    subparsers.add_parser(
+    migrate_next = subparsers.add_parser(
         "migrate-next",
         help="migrate or resume the next unfinished device",
+    )
+    migrate_next.add_argument(
+        "--join-via",
+        default="coordinator",
+        metavar="ROUTER",
+        help="temporary join path: coordinator (default), all, or a Z2M router",
     )
     migrate = subparsers.add_parser(
         "migrate",
@@ -1126,6 +1207,12 @@ def build_parser() -> argparse.ArgumentParser:
         "migration_id",
         metavar="DXXX",
         help="any migration ID present in migration-plan.csv (for example D001)",
+    )
+    migrate.add_argument(
+        "--join-via",
+        default="coordinator",
+        metavar="ROUTER",
+        help="temporary join path: coordinator (default), all, or a Z2M router",
     )
     baseline = subparsers.add_parser(
         "baseline",
@@ -1150,6 +1237,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="run the guarded pairing stage for one DXXX device",
     )
     pair.add_argument("migration_id")
+    pair.add_argument(
+        "--join-via",
+        default="coordinator",
+        metavar="ROUTER",
+        help="temporary join path: coordinator (default), all, or a Z2M router",
+    )
     apply_map = subparsers.add_parser(
         "apply-entity-map",
         help="preview or apply entity-ID mappings for one DXXX device",
@@ -1167,6 +1260,7 @@ def build_parser() -> argparse.ArgumentParser:
 COMMANDS = {
     "initialize": command_initialize,
     "status": command_status,
+    "join-routers": command_join_routers,
     "preflight": command_preflight,
     "migrate-next": command_migrate_next,
     "migrate": command_migrate,
