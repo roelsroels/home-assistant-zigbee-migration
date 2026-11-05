@@ -119,6 +119,10 @@ should be used only when a specific nearby router is not known.
 
 If a mapping is ambiguous, the wizard stops at that device and identifies the
 few unresolved worksheet cells. It will not advance or guess.
+Configuration and diagnostic entities are excluded when the wizard evaluates an
+otherwise unique functional entity in the same domain. For example, a plug's
+`child_lock` configuration switch cannot make its primary on/off switch appear
+ambiguous.
 
 An `unknown` diagnostic entity, such as an Aqara battery reading that may take
 many hours to arrive, is reported as a warning and does not block verification

@@ -573,6 +573,36 @@ class ToolkitTests(unittest.TestCase):
         )
         self.assertEqual(unresolved, [])
 
+    def test_mapping_ignores_config_switch_for_functional_switch_fallback(self) -> None:
+        old = [
+            {
+                "entity_id": "switch.on_off_plug_in_unit_18",
+                "original_name": None,
+                "entity_category": None,
+            }
+        ]
+        new = [
+            {
+                "entity_id": "switch.smart_outlet_11_cv_ketel",
+                "original_name": None,
+                "entity_category": None,
+            },
+            {
+                "entity_id": "switch.smart_outlet_11_cv_ketel_child_lock",
+                "original_name": "Child lock",
+                "entity_category": "config",
+            },
+        ]
+        suggestions, unresolved = suggest_entity_mappings(old, new)
+        self.assertEqual(
+            suggestions["switch.on_off_plug_in_unit_18"],
+            (
+                "switch.smart_outlet_11_cv_ketel",
+                "only remaining entity in domain",
+            ),
+        )
+        self.assertEqual(unresolved, [])
+
     def test_mapping_does_not_guess_between_collision_suffixes(self) -> None:
         old = [{"entity_id": "switch.outlet", "original_name": None}]
         new = [

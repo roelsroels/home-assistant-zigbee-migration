@@ -294,13 +294,18 @@ def suggest_entity_mappings(
     assign_unique(tail, "same unique ID suffix")
 
     for old_id in sorted(tuple(unmatched_old)):
+        old_category = old_by_id[old_id].get("entity_category")
         candidates = [
-            new_id for new_id in unmatched_new if domain(new_id) == domain(old_id)
+            new_id
+            for new_id in unmatched_new
+            if domain(new_id) == domain(old_id)
+            and new_by_id[new_id].get("entity_category") == old_category
         ]
         reverse = [
             other_old
             for other_old in unmatched_old
             if domain(other_old) == domain(old_id)
+            and old_by_id[other_old].get("entity_category") == old_category
         ]
         if len(candidates) == 1 and len(reverse) == 1:
             new_id = candidates[0]
