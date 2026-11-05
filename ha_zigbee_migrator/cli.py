@@ -59,6 +59,7 @@ def paths(config: AppConfig) -> dict[str, Path]:
         "pair_results": root / "pair-results",
         "reports": root / "reports",
         "backups": root / "backups",
+        "retirements": root / "cleanup-retirements.json",
     }
 
 
@@ -209,6 +210,77 @@ def command_reopen(config: AppConfig, args: argparse.Namespace) -> None:
     print("  3. Reload Automations in Home Assistant (or restart Core).")
     print("  4. Physically test the device, then confirm the review in the wizard.")
     print(f"\n  ./run.sh migrate {args.migration_id}")
+
+
+def cleanup_retirement_ids(config: AppConfig) -> set[str]:
+    """Return migration IDs explicitly approved for final deCONZ retirement."""
+    path = paths(config)["retirements"]
+    if not path.exists():
+        return set()
+    data = read_json(path)
+    approved = data.get("approved", {}) if isinstance(data, dict) else {}
+    return set(approved) if isinstance(approved, dict) else set()
+
+
+def command_approve_retirement(config: AppConfig, args: argparse.Namespace) -> None:
+    """Record or revoke approval to retire deliberately skipped resources."""
+    plan = {row.migration_id: row for row in load_plan(paths(config)["plan"])}
+    rows = []
+    for migration_id in args.migration_ids:
+        row = plan.get(migration_id)
+        if row is None:
+            raise SafetyError(f"Migration ID {migration_id!r} does not exist")
+        if row.status != "skip":
+            raise SafetyError(
+                f"{migration_id} has status {row.status!r}; retirement approval "
+                "is only for deliberately skipped rows"
+            )
+        rows.append(row)
+
+    retirement_path = paths(config)["retirements"]
+    data = (
+        read_json(retirement_path)
+        if retirement_path.exists()
+        else {"approved": {}}
+    )
+    approved = data.setdefault("approved", {})
+    action = "revoke retirement approval for" if args.undo else "approve retirement of"
+    print(section_heading("deCONZ retirement decision"))
+    for row in rows:
+        print(f"  {row.migration_id}  {row.old_device_name}")
+        for entity_id in row.old_entity_ids:
+            print(f"    - {entity_id}")
+    explanation = (
+        "This only changes the local cleanup approval file; it does not change "
+        "Home Assistant or deCONZ."
+        if args.undo
+        else "These resources will be allowed to disappear when you later remove "
+        "the deCONZ integration. This command does not delete anything now."
+    )
+    if not confirm_yes_no(
+        f"{action.capitalize()} {len(rows)} deliberately skipped resource(s)? "
+        f"{explanation}",
+        prompt="Record this decision? [y/N]: ",
+    ):
+        print("Cancelled. No cleanup approval was changed.")
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        if args.undo:
+            approved.pop(row.migration_id, None)
+        else:
+            approved[row.migration_id] = {
+                "name": row.old_device_name,
+                "approved_at": now,
+            }
+    data["updated_at"] = now
+    write_json(retirement_path, data)
+    if args.undo:
+        print(success("Retirement approval revoked. The resources are protected again."))
+    else:
+        print(success("Retirement approval recorded. No live resource was changed."))
+    print(f"Decision file: {retirement_path}")
 
 
 def command_join_routers(config: AppConfig, _args: argparse.Namespace) -> None:
@@ -561,16 +633,24 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
     for entity in planned_entities:
         live_by_device.setdefault(str(entity.get("device_id")), []).append(entity)
 
+    retirement_ids = cleanup_retirement_ids(config)
     protected_rows = [
         by_device[device_id]
         for device_id in live_by_device
         if by_device[device_id].status != "verified"
+        and by_device[device_id].migration_id not in retirement_ids
     ]
     verified_rows = [
         by_device[device_id]
         for device_id in live_by_device
         if by_device[device_id].status == "verified"
     ]
+    retirement_rows = [
+        by_device[device_id]
+        for device_id in live_by_device
+        if by_device[device_id].migration_id in retirement_ids
+    ]
+    cleanup_rows = verified_rows + retirement_rows
 
     references: list[dict[str, Any]] = []
     protected_references: list[dict[str, Any]] = []
@@ -636,9 +716,10 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
         "counts": {
             "live_deconz_entities": len(live_deconz),
             "verified_cleanup_entities": sum(
-                len(live_by_device[row.old_device_id]) for row in verified_rows
+                len(live_by_device[row.old_device_id]) for row in cleanup_rows
             ),
             "verified_cleanup_devices": len(verified_rows),
+            "approved_retirement_devices": len(retirement_rows),
             "protected_devices": len(protected_rows),
             "unknown_deconz_entities": len(unknown_entities),
             "configuration_references": len(references),
@@ -666,6 +747,16 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
             }
             for row in sorted(verified_rows, key=lambda item: item.migration_id)
         ],
+        "approved_retirements": [
+            {
+                "migration_id": row.migration_id,
+                "name": row.old_device_name,
+                "entities": sorted(
+                    entity["entity_id"] for entity in live_by_device[row.old_device_id]
+                ),
+            }
+            for row in sorted(retirement_rows, key=lambda item: item.migration_id)
+        ],
         "unknown_deconz_entities": sorted(
             entity["entity_id"] for entity in unknown_entities
         ),
@@ -679,8 +770,9 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
     print(f"  Live deCONZ entities:       {len(live_deconz)}")
     print(
         f"  Verified cleanup set:       {report['counts']['verified_cleanup_entities']} "
-        f"entities on {len(verified_rows)} devices"
+        f"entities on {len(cleanup_rows)} devices"
     )
+    print(f"  Approved retirements:       {len(retirement_rows)}")
     print(warning(f"  Protected devices:          {len(protected_rows)}"))
     print(warning(f"  Configuration references:  {len(references)}"))
     print(
@@ -703,6 +795,11 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
             live_by_device[row.old_device_id], key=lambda item: item["entity_id"]
         ):
             print(f"    - {entity['entity_id']}")
+
+    if retirement_rows:
+        print(f"\n{section_heading('Approved for final retirement')}")
+        for row in sorted(retirement_rows, key=lambda item: item.migration_id):
+            print(f"  {row.migration_id}  {row.old_device_name}")
 
     if references:
         print(f"\n{section_heading('References to update or deliberately retire')}")
@@ -2007,6 +2104,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="reopen a stale verified DXXX device for reference review",
     )
     reopen.add_argument("migration_id", metavar="DXXX")
+    retirement = subparsers.add_parser(
+        "approve-retirement",
+        help="approve skipped deCONZ resources for final integration removal",
+    )
+    retirement.add_argument("migration_ids", nargs="+", metavar="DXXX")
+    retirement.add_argument(
+        "--undo",
+        action="store_true",
+        help="revoke prior retirement approval and protect the resources again",
+    )
     subparsers.add_parser(
         "join-routers",
         help="list Z2M routers available for router-assisted pairing",
@@ -2107,6 +2214,7 @@ COMMANDS = {
     "initialize": command_initialize,
     "status": command_status,
     "reopen": command_reopen,
+    "approve-retirement": command_approve_retirement,
     "join-routers": command_join_routers,
     "preflight": command_preflight,
     "migrate-next": command_migrate_next,

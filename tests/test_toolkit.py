@@ -188,6 +188,14 @@ class ToolkitTests(unittest.TestCase):
         args = build_parser().parse_args(["cleanup-audit"])
         self.assertEqual(args.command, "cleanup-audit")
 
+    def test_approve_retirement_command_parses(self) -> None:
+        args = build_parser().parse_args(
+            ["approve-retirement", "D002", "D015", "--undo"]
+        )
+        self.assertEqual(args.command, "approve-retirement")
+        self.assertEqual(args.migration_ids, ["D002", "D015"])
+        self.assertTrue(args.undo)
+
     def test_reopen_command_parses(self) -> None:
         args = build_parser().parse_args(["reopen", "D033"])
         self.assertEqual(args.command, "reopen")

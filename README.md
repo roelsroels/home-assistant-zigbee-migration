@@ -291,6 +291,15 @@ configuration-reference scan, and writes a detailed report under
 separately as expected protected dependencies; they are not mislabeled as stale
 cleanup work because the migration normally preserves their entity IDs.
 
+If deliberately skipped deCONZ resources should disappear during final cleanup,
+record that decision explicitly (nothing is deleted by this command):
+
+```bash
+./run.sh approve-retirement D002 D015 D016
+```
+
+Revoke an approval with the same IDs plus `--undo`.
+
 ## Individual commands for inspection and recovery
 
 ### 1. Connectivity preflight
@@ -476,6 +485,8 @@ backup-z2m                Download and checksum a Z2M data backup
 snapshot --create-plan    Export HA/Z2M inventory and create worksheets
 audit                     Find entity/device references without editing files
 cleanup-audit             Check deCONZ removal readiness; never deletes anything
+approve-retirement DXXX [DXXX ...]
+                          Allow skipped resources in final deCONZ removal
 pair D001                 Supervised pairing of one planned device
 apply-entity-map D001          Dry-run one device's entity registry rename plan
 apply-entity-map D001 --apply  Apply reviewed mappings with rollback attempt
