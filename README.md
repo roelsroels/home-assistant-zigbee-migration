@@ -228,6 +228,26 @@ choice to accept the pending reading and finish the migration. That exception is
 recorded in the verification report. Missing entities, `unavailable` states, and
 deCONZ ownership can never be waived.
 
+Device-based triggers need separate review because preserving an entity ID does
+not rewrite an automation's old deCONZ `device_id`. When the reference audit
+finds old-device references, verification shows their files and line numbers and
+stops by default. Update or deliberately retire them, reload Automations in Home
+Assistant (or restart Core when appropriate), physically test the control, then
+answer `Y` on the next run. That acknowledgement is stored as a durable report.
+
+If a device was already marked `verified` but later proves incomplete, its
+status is stale. Reopen only that row without re-pairing or undoing mappings:
+
+```bash
+./run.sh reopen D033
+./run.sh migrate D033
+```
+
+The reopen command explains the recovery sequence and returns the row to the
+review stage. Correct the displayed references, reload the affected Home
+Assistant configuration, test the physical device, and confirm the review; only
+then is it marked `verified` again.
+
 If Home Assistant drops its WebSocket connection during a run, the toolkit now
 prints a short resumable error instead of a Python traceback. Completed pairing,
 rename, and mapping checkpoints remain on disk; rerun the same command to resume.
@@ -408,6 +428,7 @@ Only then move to the next device.
 ```text
 initialize                One-time guarded preparation; preserves existing work
 status                    List remaining, partial, verified, and skipped devices
+reopen DXXX               Reopen a stale verified row for reference review
 migrate-next              Select, migrate, map and verify the next device
 migrate DXXX              Migrate or resume any explicitly selected plan ID
 migrate DXXX --join-via ROUTER

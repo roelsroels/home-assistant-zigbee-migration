@@ -24,8 +24,16 @@ Keep the **ConBee II connected to Zigbee2MQTT** throughout this project and do n
       records a deliberate skip and does not preserve that old entity ID.
 - [ ] Confirm the entity-ID change only if every displayed mapping is correct.
 - [ ] If the wizard reports ambiguity, fill only those worksheet rows and rerun it.
+- [ ] Replace or deliberately retire every reported old deCONZ device-ID trigger.
+- [ ] After YAML changes, reload Automations in Home Assistant (or restart Core),
+      then physically test the button before confirming reference review.
 - [ ] Test dashboards, automations, scenes, scripts and voice commands.
 - [ ] Note the next suggestion only after the current device is marked verified.
+
+If `status` says `verified` but functionality is still missing, treat that status
+as stale: run `./run.sh reopen DXXX`, follow the displayed reference-repair steps,
+then rerun `./run.sh migrate DXXX`. Reopening does not re-pair the device or undo
+entity-ID mappings.
 
 ## Batch migration for identical devices
 

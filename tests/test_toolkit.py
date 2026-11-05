@@ -1,5 +1,7 @@
 from contextlib import redirect_stderr, redirect_stdout
+import csv
 from io import StringIO
+import json
 from pathlib import Path
 from queue import Queue
 from types import MethodType, SimpleNamespace
@@ -15,11 +17,13 @@ from ha_zigbee_migrator.cli import (
     already_has_target_name,
     batch_device_signature,
     build_parser,
+    command_reopen,
     group_plan_by_progress,
     main,
     meaningful_reference_hits,
     normalize_ieee,
     offer_unresolved_mapping_skips,
+    review_old_device_references,
     successful_z2m_device,
     unresolved_mapping_details,
     verification_is_waiting_for_unknown_states,
@@ -28,6 +32,7 @@ from ha_zigbee_migrator.z2m import Z2MClient, Z2MError
 from ha_zigbee_migrator.inventory import (
     backup_entity_id,
     load_entity_map,
+    load_plan,
     scan_references,
     suggest_entity_mappings,
     verify_expected_entities,
@@ -178,6 +183,134 @@ class ToolkitTests(unittest.TestCase):
     def test_status_command_parses(self) -> None:
         args = build_parser().parse_args(["status"])
         self.assertEqual(args.command, "status")
+
+    def test_reopen_command_parses(self) -> None:
+        args = build_parser().parse_args(["reopen", "D033"])
+        self.assertEqual(args.command, "reopen")
+        self.assertEqual(args.migration_id, "D033")
+
+    def test_reopen_changes_only_stale_verified_status(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.mkdir(exist_ok=True)
+            plan_path = root / "migration-plan.csv"
+            with plan_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=(
+                        "migration_id",
+                        "old_device_id",
+                        "old_device_name",
+                        "old_entity_ids",
+                        "target_friendly_name",
+                        "status",
+                        "notes",
+                    ),
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "migration_id": "D033",
+                        "old_device_id": "old-device-id",
+                        "old_device_name": "Smart Switch 1",
+                        "old_entity_ids": "sensor.switch_battery",
+                        "target_friendly_name": "smart_switch_1",
+                        "status": "verified",
+                        "notes": "",
+                    }
+                )
+            config = SimpleNamespace(
+                paths=SimpleNamespace(output_dir=root)
+            )
+            rendered = StringIO()
+            with patch("builtins.input", return_value="y"), redirect_stdout(
+                rendered
+            ):
+                command_reopen(
+                    config,
+                    SimpleNamespace(migration_id="D033"),
+                )
+            row = load_plan(plan_path)[0]
+            review = root / "reports" / "device-reference-review-D033.json"
+            saved_review = json.loads(review.read_text())
+        self.assertEqual(row.status, "mapped")
+        self.assertFalse(saved_review["accepted"])
+        self.assertIn("Reload Automations", rendered.getvalue())
+        self.assertIn("./run.sh migrate D033", rendered.getvalue())
+
+    def test_device_reference_review_defaults_to_stop_then_can_continue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "reports").mkdir(parents=True)
+            (root / "pair-results").mkdir()
+            plan_path = root / "migration-plan.csv"
+            with plan_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=(
+                        "migration_id",
+                        "old_device_id",
+                        "old_device_name",
+                        "old_entity_ids",
+                        "target_friendly_name",
+                        "status",
+                        "notes",
+                    ),
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "migration_id": "D033",
+                        "old_device_id": "old-device-id",
+                        "old_device_name": "Smart Switch 1",
+                        "old_entity_ids": "sensor.switch_battery",
+                        "target_friendly_name": "smart_switch_1",
+                        "status": "mapped",
+                        "notes": "",
+                    }
+                )
+            write_json(
+                root / "reports" / "reference-audit-20261105T000000Z.json",
+                [
+                    {
+                        "reference": "old-device-id",
+                        "path": "/config/automations.yaml",
+                        "line": 5,
+                        "text": "device_id: old-device-id",
+                    }
+                ],
+            )
+            write_json(
+                root / "pair-results" / "D033-20261105T000000Z.json",
+                {
+                    "new_home_assistant_entities": [
+                        {"device_id": "new-mqtt-device-id"}
+                    ]
+                },
+            )
+            config = SimpleNamespace(
+                paths=SimpleNamespace(output_dir=root)
+            )
+            rendered = StringIO()
+            with patch("builtins.input", return_value="n"), redirect_stdout(
+                rendered
+            ):
+                self.assertFalse(
+                    review_old_device_references(config, "D033")
+                )
+            self.assertIn("reload Automations", rendered.getvalue())
+            self.assertIn("new-mqtt-device-id", rendered.getvalue())
+            with patch("builtins.input", return_value="y"), redirect_stdout(
+                StringIO()
+            ):
+                self.assertTrue(
+                    review_old_device_references(config, "D033")
+                )
+            with patch("builtins.input") as prompt, redirect_stdout(StringIO()):
+                self.assertTrue(
+                    review_old_device_references(config, "D033")
+                )
+            prompt.assert_not_called()
 
     def test_plan_progress_groups_are_mutually_exclusive(self) -> None:
         rows = [

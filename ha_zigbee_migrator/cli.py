@@ -170,6 +170,47 @@ def command_status(config: AppConfig, _args: argparse.Namespace) -> None:
             )
 
 
+def command_reopen(config: AppConfig, args: argparse.Namespace) -> None:
+    """Reopen a stale verified row for trigger/reference review."""
+    row = plan_row_by_id(config, args.migration_id)
+    if row.status != "verified":
+        raise SafetyError(
+            f"{args.migration_id} has status {row.status!r}; reopen is only for a "
+            "device whose verified status has become stale"
+        )
+    if not confirm_yes_no(
+        f"Reopen stale status for {args.migration_id} ({row.old_device_name})? "
+        "This changes only the local migration status to mapped; it does not "
+        "re-pair the device or undo entity-ID mappings.",
+        prompt="Reopen for review? [y/N]: ",
+    ):
+        print("Cancelled. The verified status was not changed.")
+        return
+    write_json(
+        device_reference_review_path(config, args.migration_id),
+        {
+            "accepted": False,
+            "migration_id": args.migration_id,
+            "old_device_id": row.old_device_id,
+            "reopened_at": datetime.now(timezone.utc).isoformat(),
+            "reason": "Verified status was explicitly reopened for review",
+        },
+    )
+    update_plan_status(
+        paths(config)["plan"],
+        args.migration_id,
+        "mapped",
+        "Reopened because verified status was stale; references need review",
+    )
+    print(success(f"{args.migration_id} has been reopened for review."))
+    print("Next steps:")
+    print("  1. Run the migration command shown below.")
+    print("  2. Update or retire every displayed old-device reference.")
+    print("  3. Reload Automations in Home Assistant (or restart Core).")
+    print("  4. Physically test the device, then confirm the review in the wizard.")
+    print(f"\n  ./run.sh migrate {args.migration_id}")
+
+
 def command_join_routers(config: AppConfig, _args: argparse.Namespace) -> None:
     """List Z2M routers that can be selected as a pairing path."""
     with Z2MClient(config.mqtt) as z2m:
@@ -863,6 +904,8 @@ def command_verify(config: AppConfig, _args: argparse.Namespace) -> bool:
             "Mapping worksheet still has pending rows for this device. Map them or "
             "set their status to skip after deliberate review."
         )
+    if not review_old_device_references(config, _args.migration_id):
+        return False
     with HomeAssistantClient(config.home_assistant) as ha, Z2MClient(config.mqtt) as z2m:
         require_baseline(config, z2m)
         report = verify_expected_entities(
@@ -1011,6 +1054,96 @@ def meaningful_reference_hits(
             continue
         useful.append(row)
     return useful
+
+
+def device_reference_review_path(config: AppConfig, migration_id: str) -> Path:
+    """Return the durable acknowledgement path for old device-ID references."""
+    return paths(config)["reports"] / f"device-reference-review-{migration_id}.json"
+
+
+def review_old_device_references(config: AppConfig, migration_id: str) -> bool:
+    """Require review of automations that still name the old deCONZ device."""
+    row = plan_row_by_id(config, migration_id)
+    output = paths(config)
+    references = meaningful_reference_hits(
+        output["reports"],
+        row.old_device_id,
+    )
+    if not references:
+        return True
+
+    review_path = device_reference_review_path(config, migration_id)
+    if review_path.exists():
+        prior = read_json(review_path)
+        if (
+            prior.get("accepted") is True
+            and prior.get("references") == references
+        ):
+            return True
+
+    pair_results = sorted(
+        output["pair_results"].glob(f"{migration_id}-*.json")
+    )
+    new_device_ids: set[str] = set()
+    if pair_results:
+        pair_result = read_json(pair_results[-1])
+        new_device_ids = {
+            item["device_id"]
+            for item in pair_result.get("new_home_assistant_entities", [])
+            if item.get("device_id")
+        }
+
+    print(
+        "\n"
+        + warning(
+            f"Old deCONZ device references still require review for {migration_id}"
+        )
+    )
+    print(
+        "  Entity-ID preservation cannot update device-based automation triggers."
+    )
+    print(f"  Old deCONZ device ID: {row.old_device_id}")
+    if new_device_ids:
+        print("  New MQTT device ID(s): " + ", ".join(sorted(new_device_ids)))
+    print("  References from the latest configuration audit:")
+    for hit in references[:10]:
+        print(f"    - {hit.get('path')}:{hit.get('line')}  {hit.get('text', '')}")
+    if len(references) > 10:
+        print(f"    ...and {len(references) - 10} more")
+    print("\n  Before continuing:")
+    print("    1. Replace or deliberately retire every old device trigger.")
+    print("    2. When editing YAML, reload Automations in Home Assistant (or restart Core).")
+    print("    3. Test the physical button and confirm its intended action runs.")
+    print(
+        "  The audit can be a saved configuration snapshot, so the script asks for "
+        "your explicit confirmation after the live system has been corrected."
+    )
+    accepted = confirm_yes_no(
+        "Have all listed old-device references been updated or deliberately "
+        "retired, reloaded, and physically tested?",
+        prompt="References reviewed and tested? [y/N]: ",
+    )
+    write_json(
+        review_path,
+        {
+            "accepted": accepted,
+            "migration_id": migration_id,
+            "old_device_id": row.old_device_id,
+            "new_device_ids": sorted(new_device_ids),
+            "references": references,
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    if accepted:
+        print(success("Device-trigger review recorded."))
+        return True
+    print(
+        warning(
+            f"{migration_id} remains open for review. Correct and reload the "
+            "automations, test the device, then rerun the same migration command."
+        )
+    )
+    return False
 
 
 def unresolved_mapping_details(
@@ -1253,6 +1386,13 @@ def run_device_workflow(
     if row.status == "verified":
         print_suggested_device(config, row, "Selected device:")
         print("This device is already verified; no operation was started.")
+        print(
+            warning(
+                "If that status is stale—for example, old deCONZ button triggers "
+                "still do not work—reopen it with:"
+            )
+        )
+        print(f"  ./run.sh reopen {row.migration_id}")
         return
     if row.status == "skip":
         raise SafetyError(
@@ -1614,6 +1754,11 @@ def build_parser() -> argparse.ArgumentParser:
         "status",
         help="list remaining, partial, verified, and skipped devices",
     )
+    reopen = subparsers.add_parser(
+        "reopen",
+        help="reopen a stale verified DXXX device for reference review",
+    )
+    reopen.add_argument("migration_id", metavar="DXXX")
     subparsers.add_parser(
         "join-routers",
         help="list Z2M routers available for router-assisted pairing",
@@ -1709,6 +1854,7 @@ def build_parser() -> argparse.ArgumentParser:
 COMMANDS = {
     "initialize": command_initialize,
     "status": command_status,
+    "reopen": command_reopen,
     "join-routers": command_join_routers,
     "preflight": command_preflight,
     "migrate-next": command_migrate_next,
