@@ -705,6 +705,7 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
         for device in devices
         if device.get("id") in by_device
     }
+    cleanup_complete = not live_deconz and not old_device_registry_ids
     ready = bool(reference_report) and not (
         protected_rows or unknown_entities or references
     )
@@ -712,6 +713,7 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "configuration_source": str(config_root) if config_root else None,
         "reference_report": str(reference_report) if reference_report else None,
+        "cleanup_complete": cleanup_complete,
         "ready_to_remove_deconz": ready,
         "counts": {
             "live_deconz_entities": len(live_deconz),
@@ -782,6 +784,7 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
         )
     )
     print(warning(f"  Unplanned deCONZ entities:  {len(unknown_entities)}"))
+    print(f"  Old deCONZ devices:         {len(old_device_registry_ids)}")
 
     print(f"\n{section_heading('Protected — do not remove')}")
     if not protected_rows:
@@ -838,7 +841,16 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
             "dashboards."
         )
 
-    if ready:
+    if cleanup_complete:
+        print(
+            success(
+                "Cleanup complete. No deCONZ-owned entities or planned old "
+                "deCONZ devices remain in Home Assistant. Keep the final backup "
+                "and verify Zigbee2MQTT normally; no further registry cleanup is "
+                "needed."
+            )
+        )
+    elif ready:
         print(
             success(
                 "Cleanup readiness passed. Create a fresh Home Assistant backup, "

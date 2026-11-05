@@ -379,7 +379,8 @@ Once the command reports that cleanup readiness passed, create a fresh Home
 Assistant backup and remove the deCONZ integration through **Settings > Devices
 & services**. This is safer than deleting deCONZ registry entries one by one:
 Home Assistant removes all entities and devices owned by the integration as one
-consistent operation.
+consistent operation. Afterward, rerun `cleanup-audit`; zero deCONZ entities and
+zero old deCONZ devices are reported as **Cleanup complete**.
 
 ### 6. Pair one device
 
