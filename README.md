@@ -102,8 +102,8 @@ state, or successful interview can close joining and advance the migration.
 ### Migrating identical devices together
 
 Two or more devices with the same saved manufacturer and model can share one
-pairing window. For example, the four identical IKEA lamps in the included
-migration plan can be migrated with:
+pairing window. Pass every selected migration ID explicitly. For example, four
+identical IKEA lamps can be migrated with:
 
 ```bash
 ./run.sh migrate-batch D007 D008 D009 D010 --join-via all
@@ -123,6 +123,42 @@ not paired again, and only still-missing devices are included in a later join
 window. Mixed manufacturer/model selections and duplicate IEEE addresses are
 refused.
 
+If a batch stops partway through, rerun the exact same command. Devices already
+verified are skipped, successfully interviewed devices continue without another
+factory reset, and only devices still missing from Z2M are placed in the next
+join window. The batch pauses at the first device whose mapping or verification
+needs attention; it never advances later rows past an unresolved device.
+
+### Selecting the temporary join path
+
+The option is `--join-via`, followed by one of these values:
+
+```bash
+# Default: accept joins through the coordinator only
+./run.sh migrate D024
+
+# Accept joins through one existing Z2M router
+./run.sh migrate D024 --join-via "nearby router name"
+
+# Accept joins through all available coordinator/router paths
+./run.sh migrate D024 --join-via all
+```
+
+There is no separate `--join-all` flag. The correct all-path form is
+`--join-via all`. In this mode the toolkit sends Zigbee2MQTT's global
+`permit_join` request without a `device` selector; it does not send `all` as if
+that were a router name. This is the form to use for a batch of devices that may
+join through different routers:
+
+```bash
+./run.sh migrate-batch D007 D008 D009 D010 --join-via all
+```
+
+All-path joining is intentionally broader than coordinator-only or
+single-router joining, so the wizard requires an additional Y/N confirmation.
+The exact saved IEEE allowlist remains active: an unexpected fresh device closes
+joining immediately and fails the batch safely.
+
 Coordinator-only joining remains the default. If a device cannot be brought
 close to the coordinator, list the already migrated mains-powered routers:
 
@@ -138,8 +174,7 @@ Then select one nearby router by its exact Z2M friendly name:
 
 The wizard requires an additional Y/N confirmation for router-assisted joining.
 This changes only the temporary pairing path; the pinned coordinator and network
-identity remain unchanged. `--join-via all` is also supported but is broader and
-should be used only when a specific nearby router is not known.
+identity remain unchanged.
 
 If a mapping is ambiguous, the wizard stops at that device and identifies the
 few unresolved worksheet cells. It will not advance or guess.
@@ -268,7 +303,7 @@ Safety behaviour:
 1. The complete old device and entity list is displayed.
 2. You must answer `Y` to the pairing confirmation.
 3. The live coordinator must match the pinned ConBee II baseline.
-4. Joining opens through the coordinator only, for at most 60 seconds.
+4. Joining opens through the selected path for the configured guarded interval.
 5. Joining closes in a `finally` block even on errors.
 6. Exactly one new successful interview is accepted.
 7. You must confirm its IEEE address.
@@ -340,6 +375,15 @@ initialize                One-time guarded preparation; preserves existing work
 status                    List remaining, partial, verified, and skipped devices
 migrate-next              Select, migrate, map and verify the next device
 migrate DXXX              Migrate or resume any explicitly selected plan ID
+migrate DXXX --join-via ROUTER
+                          Pair through one exact existing Z2M router
+migrate DXXX --join-via all
+                          Pair through all coordinator/router paths
+migrate-batch D001 D002 [D003 ...]
+                          Migrate identical devices in one pairing window
+migrate-batch D001 D002 --join-via all
+                          Batch migration through all available join paths
+join-routers              List valid Z2M router names for --join-via
 preflight                 Read-only connectivity and coordinator check
 baseline                  Pin the current ConBee II/Z2M network identity
 backup-z2m                Download and checksum a Z2M data backup
@@ -357,6 +401,8 @@ verify D001                    Validate one device and coordinator identity
 - [Zigbee2MQTT device pairing guidance](https://www.zigbee2mqtt.io/getting_started/pairing_devices.html)
 
 The toolkit uses the documented transaction-matched bridge request/response
-topics, coordinator-only `permit_join`, `device_interview` events,
+topics, guarded `permit_join` requests, `device_interview` events,
 `device/rename` with Home Assistant rename discovery, and the data-folder backup
-request.
+request. Coordinator-only joining sends `device: coordinator`; a named router
+sends that router as `device`; and `--join-via all` deliberately omits the
+`device` field so Zigbee2MQTT opens all available paths.
