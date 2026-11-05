@@ -573,10 +573,15 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
     ]
 
     references: list[dict[str, Any]] = []
+    protected_references: list[dict[str, Any]] = []
     if reference_report is not None:
         report_rows = read_json(reference_report)
-        live_deconz_ids = {entity["entity_id"] for entity in live_deconz}
+        entity_device = {
+            entity["entity_id"]: entity.get("device_id") for entity in live_deconz
+        }
+        live_deconz_ids = set(entity_device)
         old_device_ids = set(by_device)
+        protected_device_ids = {row.old_device_id for row in protected_rows}
         ignored_fragments = (
             "/.storage/core.entity_registry",
             "/.storage/core.device_registry",
@@ -584,10 +589,8 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
             "/.storage/trace.saved_traces",
             "/.migration_backup/",
         )
-        references = [
-            hit
-            for hit in report_rows
-            if (
+        relevant_hits = [
+            hit for hit in report_rows if (
                 (
                     hit.get("kind") == "device_id"
                     and hit.get("reference") in old_device_ids
@@ -603,6 +606,19 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
             )
             and not Path(str(hit.get("path", ""))).name.startswith("tmp")
         ]
+        for hit in relevant_hits:
+            reference = str(hit.get("reference"))
+            protected = (
+                hit.get("kind") == "device_id"
+                and reference in protected_device_ids
+            ) or (
+                hit.get("kind") == "entity_id"
+                and entity_device.get(reference) in protected_device_ids
+            )
+            if protected:
+                protected_references.append(hit)
+            else:
+                references.append(hit)
 
     old_device_registry_ids = {
         device.get("id")
@@ -626,6 +642,7 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
             "protected_devices": len(protected_rows),
             "unknown_deconz_entities": len(unknown_entities),
             "configuration_references": len(references),
+            "protected_configuration_references": len(protected_references),
             "old_devices_in_registry": len(old_device_registry_ids),
         },
         "protected_devices": [
@@ -653,6 +670,7 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
             entity["entity_id"] for entity in unknown_entities
         ),
         "configuration_references": references,
+        "protected_configuration_references": protected_references,
     }
     report_path = output["reports"] / f"cleanup-audit-{timestamp_slug()}.json"
     write_json(report_path, report)
@@ -665,6 +683,12 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
     )
     print(warning(f"  Protected devices:          {len(protected_rows)}"))
     print(warning(f"  Configuration references:  {len(references)}"))
+    print(
+        warning(
+            "  Protected dependencies:     "
+            f"{len(protected_references)}"
+        )
+    )
     print(warning(f"  Unplanned deCONZ entities:  {len(unknown_entities)}"))
 
     print(f"\n{section_heading('Protected — do not remove')}")
@@ -687,6 +711,19 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
                 f"  - {hit.get('reference')}  "
                 f"[{hit.get('path')}:{hit.get('line')}]"
             )
+
+    if protected_references:
+        print(f"\n{section_heading('Expected references on protected devices')}")
+        for hit in protected_references:
+            print(
+                f"  - {hit.get('reference')}  "
+                f"[{hit.get('path')}:{hit.get('line')}]"
+            )
+        print(
+            "  These are not stale cleanup items. The migration workflow should "
+            "preserve these entity IDs; verify their automation/Energy behavior "
+            "after migrating the associated devices."
+        )
 
     print(f"\nDetailed report: {report_path}")
     if config_root is None or not config_root.exists():
@@ -717,8 +754,10 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
         print(
             warning(
                 "Not ready to remove deCONZ. Finish or deliberately retire every "
-                "protected device, resolve the references above, refresh the "
-                "configuration copy, and rerun ./run.sh cleanup-audit."
+                "protected device, resolve any stale references listed above, "
+                "refresh the configuration copy, and rerun "
+                "./run.sh cleanup-audit. Protected dependencies are expected to "
+                "follow their preserved entity IDs through migration."
             )
         )
     print("No Home Assistant configuration or registry entry was changed.")

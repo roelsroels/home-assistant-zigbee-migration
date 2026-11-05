@@ -287,7 +287,9 @@ To check cleanup readiness at any point, run:
 This is read-only. It protects pending and deliberately skipped devices, counts
 the old deCONZ entities belonging to verified migrations, refreshes the
 configuration-reference scan, and writes a detailed report under
-`migration-output/reports/`.
+`migration-output/reports/`. References belonging to pending devices are shown
+separately as expected protected dependencies; they are not mislabeled as stale
+cleanup work because the migration normally preserves their entity IDs.
 
 ## Individual commands for inspection and recovery
 
