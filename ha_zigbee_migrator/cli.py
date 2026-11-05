@@ -2080,10 +2080,26 @@ def command_initialize(config: AppConfig, _args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="./run.sh",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Supervised migration of devices from deCONZ to the existing Z2M "
             "network. This tool never migrates or changes the coordinator."
-        )
+        ),
+        epilog="""examples:
+  ./run.sh status
+  ./run.sh migrate-next
+  ./run.sh migrate D020
+  ./run.sh migrate D020 --join-via all
+  ./run.sh migrate D020 --join-via \"nearby_router_name\"
+  ./run.sh migrate-batch D007 D008 D009 D010 --join-via all
+  ./run.sh join-routers
+  ./run.sh reopen D033
+  ./run.sh cleanup-audit
+  ./run.sh approve-retirement D002 D015 D016
+
+Use --join-via all when devices cannot join through the coordinator alone.
+Use join-routers to list exact Zigbee2MQTT router names for targeted joining.
+""",
     )
     parser.add_argument(
         "--config",

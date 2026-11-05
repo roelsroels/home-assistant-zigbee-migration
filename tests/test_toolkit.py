@@ -157,6 +157,12 @@ class ToolkitTests(unittest.TestCase):
         self.assertIn("status", rendered)
         self.assertIn("list remaining, partial, verified, and skipped", rendered)
         self.assertIn("migrate-next", rendered)
+        self.assertIn("./run.sh migrate D020 --join-via all", rendered)
+        self.assertIn(
+            "./run.sh migrate-batch D007 D008 D009 D010 --join-via all",
+            rendered,
+        )
+        self.assertIn("./run.sh cleanup-audit", rendered)
 
     def test_control_c_exits_cleanly_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
