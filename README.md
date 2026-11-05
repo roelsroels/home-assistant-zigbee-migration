@@ -302,6 +302,38 @@ record that decision explicitly (nothing is deleted by this command):
 
 Revoke an approval with the same IDs plus `--undo`.
 
+### Reconcile PowerCalc after entity migration
+
+When PowerCalc rediscovers a migrated light, Home Assistant can retain the old
+unavailable PowerCalc entry and assign `_2` entity IDs to the healthy replacement.
+The Energy dashboard then continues referencing the unavailable original energy
+sensor. Preview safe one-to-one repairs with:
+
+```bash
+./run.sh powercalc-reconcile
+```
+
+The command only proposes a repair when every unavailable entity from one stale
+PowerCalc entry has exactly one healthy suffixed replacement belonging to one new
+PowerCalc entry. It marks target IDs currently used by the Energy dashboard and
+writes a JSON report without changing Home Assistant.
+
+After creating a fresh Home Assistant backup, apply the reviewed plan with:
+
+```bash
+./run.sh powercalc-reconcile --apply
+```
+
+The apply step asks for `Y/N` confirmation, writes a complete pre-change snapshot,
+removes only the listed stale PowerCalc configuration entries (or explicitly
+listed orphaned entity-registry records when an old entry is already absent),
+waits for Home Assistant to release their entity IDs, and renames the healthy
+replacements back to the original IDs. It deliberately leaves the Energy
+dashboard configuration unchanged so existing statistic IDs and historical data
+continue to be used. If an earlier run removed a stale entry but stopped before
+renaming, rerunning the same command can safely resume when the missing target is
+still referenced by the Energy dashboard.
+
 ## Individual commands for inspection and recovery
 
 ### 1. Connectivity preflight
@@ -488,6 +520,9 @@ backup-z2m                Download and checksum a Z2M data backup
 snapshot --create-plan    Export HA/Z2M inventory and create worksheets
 audit                     Find entity/device references without editing files
 cleanup-audit             Check deCONZ removal readiness; never deletes anything
+powercalc-reconcile       Preview stale PowerCalc collision repairs
+powercalc-reconcile --apply
+                          Remove stale PowerCalc entries and restore original IDs
 approve-retirement DXXX [DXXX ...]
                           Allow skipped resources in final deCONZ removal
 pair D001                 Supervised pairing of one planned device

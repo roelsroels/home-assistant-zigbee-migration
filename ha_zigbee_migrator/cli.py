@@ -34,6 +34,7 @@ from .inventory import (
     verify_expected_entities,
     write_entity_map,
 )
+from .powercalc import build_powercalc_reconciliation_plan
 from .safety import (
     SafetyError,
     assert_coordinator_matches,
@@ -870,6 +871,237 @@ def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
             )
         )
     print("No Home Assistant configuration or registry entry was changed.")
+
+
+def print_powercalc_reconciliation_plan(plan: list[dict[str, Any]]) -> None:
+    """Render a user-reviewable PowerCalc reconciliation plan."""
+    print(section_heading("PowerCalc reconciliation plan"))
+    print(f"  Stale/resumable entries: {len(plan)}")
+    print(
+        "  Entity IDs to restore:  "
+        f"{sum(len(item['mappings']) for item in plan)}"
+    )
+    print(
+        "  Energy references kept: "
+        f"{sum(mapping['energy_dashboard'] for item in plan for mapping in item['mappings'])}"
+    )
+    for item in plan:
+        print(f"\n{section_heading(item['new_title'])}")
+        if item["resume_only"]:
+            print(
+                warning(
+                    "  Stale entry is already gone; resuming entity-ID "
+                    "restoration."
+                )
+            )
+        elif item["old_config_entry_id"]:
+            print(f"  Remove stale PowerCalc entry: {item['old_title']}")
+        else:
+            print("  Remove orphaned unavailable PowerCalc entities:")
+            for entity_id in item["orphan_entity_ids"]:
+                print(f"    - {entity_id}")
+        for mapping in item["mappings"]:
+            dashboard = (
+                "  [Energy dashboard]" if mapping["energy_dashboard"] else ""
+            )
+            print(f"  {mapping['from']} -> {mapping['to']}{dashboard}")
+
+
+def wait_for_entity_ids_to_disappear(
+    ha: HomeAssistantClient,
+    entity_ids: set[str],
+    timeout: float = 20.0,
+) -> None:
+    """Wait until config-entry removal releases all target entity IDs."""
+    deadline = time.monotonic() + timeout
+    remaining = set(entity_ids)
+    while remaining and time.monotonic() < deadline:
+        live_ids = {str(entity["entity_id"]) for entity in ha.entities()}
+        remaining &= live_ids
+        if remaining:
+            time.sleep(0.5)
+    if remaining:
+        raise SafetyError(
+            "The stale PowerCalc entry was removed, but Home Assistant did not "
+            "release these entity IDs within 20 seconds: "
+            + ", ".join(sorted(remaining))
+            + ". Rerun ./run.sh powercalc-reconcile --apply to resume safely."
+        )
+
+
+def command_powercalc_reconcile(config: AppConfig, args: argparse.Namespace) -> None:
+    """Preview or apply safe PowerCalc entity-ID collision reconciliation."""
+    output = paths(config)
+    with HomeAssistantClient(config.home_assistant) as ha:
+        entities = ha.entities()
+        states = ha.states()
+        config_entries = ha.config_entries()
+        energy_preferences = ha.energy_preferences()
+        plan = build_powercalc_reconciliation_plan(
+            entities,
+            states,
+            config_entries,
+            energy_preferences,
+        )
+        report = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "apply_requested": bool(args.apply),
+            "plan": plan,
+        }
+        report_path = (
+            output["reports"] / f"powercalc-reconcile-{timestamp_slug()}.json"
+        )
+        write_json(report_path, report)
+
+        if not plan:
+            print(
+                success(
+                    "No safe PowerCalc entity-ID collisions require reconciliation."
+                )
+            )
+            print(f"Detailed report: {report_path}")
+            return
+
+        print_powercalc_reconciliation_plan(plan)
+        print(f"\nDetailed report: {report_path}")
+        if not args.apply:
+            print(
+                "Preview only. No Home Assistant configuration or registry entry "
+                "was changed. Review the plan, create a fresh Home Assistant "
+                "backup, then run:"
+            )
+            print("\n  ./run.sh powercalc-reconcile --apply")
+            return
+
+        if not confirm_yes_no(
+            "Remove only the listed stale PowerCalc entries and restore the "
+            "listed entity IDs? Existing Energy dashboard references will not "
+            "be edited.",
+            prompt="Apply this reconciliation? [y/N]: ",
+        ):
+            print("Cancelled. No PowerCalc entry or entity ID was changed.")
+            return
+
+        backup = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "home_assistant": ha.snapshot(),
+            "config_entries": config_entries,
+            "energy_preferences": energy_preferences,
+            "reconciliation_plan": plan,
+        }
+        backup_path = (
+            output["snapshots"]
+            / f"pre-powercalc-reconcile-{timestamp_slug()}.json"
+        )
+        write_json(backup_path, backup)
+        print(f"Pre-change Home Assistant snapshot: {backup_path}")
+
+        completed: list[dict[str, str]] = []
+        removed_entries: list[str] = []
+        removed_orphan_entities: list[str] = []
+        try:
+            for item in plan:
+                targets = {mapping["to"] for mapping in item["mappings"]}
+                old_entry_id = item["old_config_entry_id"]
+                if old_entry_id:
+                    print(f"Removing stale PowerCalc entry: {item['old_title']}")
+                    ha.delete_config_entry(old_entry_id)
+                    removed_entries.append(old_entry_id)
+                    wait_for_entity_ids_to_disappear(ha, targets)
+                elif item["orphan_entity_ids"]:
+                    print(
+                        "Removing orphaned unavailable PowerCalc registry "
+                        f"entities for {item['new_title']}"
+                    )
+                    for entity_id in item["orphan_entity_ids"]:
+                        ha.remove_entity(entity_id)
+                        removed_orphan_entities.append(entity_id)
+                    wait_for_entity_ids_to_disappear(ha, targets)
+
+                for mapping in item["mappings"]:
+                    print(f"Restoring {mapping['from']} -> {mapping['to']}")
+                    ha.rename_entity(mapping["from"], mapping["to"])
+                    completed.append(
+                        {"from": mapping["from"], "to": mapping["to"]}
+                    )
+        except Exception as err:
+            rollback_failures: list[str] = []
+            for mapping in reversed(completed):
+                try:
+                    ha.rename_entity(mapping["to"], mapping["from"])
+                except Exception as rollback_err:  # pragma: no cover - HA failure
+                    rollback_failures.append(
+                        f"{mapping['to']} -> {mapping['from']}: {rollback_err}"
+                    )
+            report.update(
+                {
+                    "status": "failed",
+                    "error": str(err),
+                    "removed_config_entries": removed_entries,
+                    "removed_orphan_entities": removed_orphan_entities,
+                    "rolled_back_entity_mappings": completed,
+                    "rollback_failures": rollback_failures,
+                    "backup_path": str(backup_path),
+                }
+            )
+            write_json(report_path, report)
+            detail = ""
+            if rollback_failures:
+                detail = " Rollback also failed for: " + "; ".join(
+                    rollback_failures
+                )
+            raise SafetyError(
+                f"PowerCalc reconciliation stopped: {err}. Completed entity "
+                "renames were rolled back where possible. Stale entries already "
+                "removed are not recreated; rerun the same command to resume. "
+                f"Snapshot: {backup_path}.{detail}"
+            ) from err
+
+        live_entities = {
+            str(entity["entity_id"]): entity for entity in ha.entities()
+        }
+        missing = [
+            mapping["to"]
+            for item in plan
+            for mapping in item["mappings"]
+            if mapping["to"] not in live_entities
+        ]
+        wrong_platform = [
+            mapping["to"]
+            for item in plan
+            for mapping in item["mappings"]
+            if live_entities.get(mapping["to"], {}).get("platform") != "powercalc"
+        ]
+        if missing or wrong_platform:
+            raise SafetyError(
+                "Post-change verification failed. Missing IDs: "
+                f"{missing or '(none)'}; non-PowerCalc IDs: "
+                f"{wrong_platform or '(none)'}. Snapshot: {backup_path}"
+            )
+
+        report.update(
+            {
+                "status": "complete",
+                "removed_config_entries": removed_entries,
+                "removed_orphan_entities": removed_orphan_entities,
+                "restored_entity_ids": completed,
+                "backup_path": str(backup_path),
+            }
+        )
+        write_json(report_path, report)
+        print(
+            success(
+                f"PowerCalc reconciliation complete: {len(plan)} repairs, "
+                f"{len(removed_entries)} stale entries removed, "
+                f"{len(removed_orphan_entities)} orphaned registry records "
+                f"removed, and {len(completed)} entity IDs restored."
+            )
+        )
+        print(
+            "The Energy dashboard configuration was intentionally left unchanged, "
+            "so its original statistic IDs and historical data remain in use."
+        )
+        print("Refresh the Energy dashboard and confirm that the warnings are gone.")
 
 
 def command_backup(config: AppConfig, _args: argparse.Namespace) -> None:
@@ -2107,6 +2339,8 @@ def build_parser() -> argparse.ArgumentParser:
   ./run.sh join-routers
   ./run.sh reopen D033
   ./run.sh cleanup-audit
+  ./run.sh powercalc-reconcile
+  ./run.sh powercalc-reconcile --apply
   ./run.sh approve-retirement D002 D015 D016
 
 Use --join-via all when devices cannot join through the coordinator alone.
@@ -2209,6 +2443,15 @@ Use join-routers to list exact Zigbee2MQTT router names for targeted joining.
         "cleanup-audit",
         help="check whether deCONZ can be removed; never deletes anything",
     )
+    powercalc_reconcile = subparsers.add_parser(
+        "powercalc-reconcile",
+        help="preview or repair stale PowerCalc entity-ID collisions",
+    )
+    powercalc_reconcile.add_argument(
+        "--apply",
+        action="store_true",
+        help="remove reviewed stale entries and restore original entity IDs",
+    )
     subparsers.add_parser(
         "backup-z2m",
         help="download and checksum a Zigbee2MQTT data backup",
@@ -2252,6 +2495,7 @@ COMMANDS = {
     "snapshot": command_snapshot,
     "audit": command_audit,
     "cleanup-audit": command_cleanup_audit,
+    "powercalc-reconcile": command_powercalc_reconcile,
     "backup-z2m": command_backup,
     "pair": command_pair,
     "apply-entity-map": command_apply_entity_map,

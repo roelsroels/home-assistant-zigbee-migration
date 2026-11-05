@@ -118,6 +118,22 @@ class HomeAssistantClient:
     def states(self) -> list[dict[str, Any]]:
         return self.call("get_states")
 
+    def config_entries(self) -> list[dict[str, Any]]:
+        """Return Home Assistant configuration entries."""
+        return self.call("config_entries/get")
+
+    def energy_preferences(self) -> dict[str, Any]:
+        """Return the Energy dashboard configuration."""
+        return self.call("energy/get_prefs")
+
+    def delete_config_entry(self, entry_id: str) -> dict[str, Any]:
+        """Delete one explicitly selected configuration entry."""
+        return self.call("config_entries/delete", entry_id=entry_id)
+
+    def remove_entity(self, entity_id: str) -> Any:
+        """Remove one explicitly selected orphaned entity-registry entry."""
+        return self.call("config/entity_registry/remove", entity_id=entity_id)
+
     def rename_entity(self, entity_id: str, new_entity_id: str) -> dict[str, Any]:
         return self.call(
             "config/entity_registry/update",

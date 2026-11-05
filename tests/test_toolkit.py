@@ -17,6 +17,7 @@ from ha_zigbee_migrator.cli import (
     already_has_target_name,
     batch_device_signature,
     build_parser,
+    command_powercalc_reconcile,
     command_reopen,
     group_plan_by_progress,
     main,
@@ -28,6 +29,7 @@ from ha_zigbee_migrator.cli import (
     unresolved_mapping_details,
     verification_is_waiting_for_unknown_states,
 )
+from ha_zigbee_migrator.powercalc import build_powercalc_reconciliation_plan
 from ha_zigbee_migrator.z2m import Z2MClient, Z2MError
 from ha_zigbee_migrator.inventory import (
     backup_entity_id,
@@ -163,6 +165,7 @@ class ToolkitTests(unittest.TestCase):
             rendered,
         )
         self.assertIn("./run.sh cleanup-audit", rendered)
+        self.assertIn("./run.sh powercalc-reconcile --apply", rendered)
 
     def test_control_c_exits_cleanly_without_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -193,6 +196,288 @@ class ToolkitTests(unittest.TestCase):
     def test_cleanup_audit_command_parses(self) -> None:
         args = build_parser().parse_args(["cleanup-audit"])
         self.assertEqual(args.command, "cleanup-audit")
+
+    def test_powercalc_reconcile_command_parses(self) -> None:
+        preview = build_parser().parse_args(["powercalc-reconcile"])
+        self.assertEqual(preview.command, "powercalc-reconcile")
+        self.assertFalse(preview.apply)
+        apply = build_parser().parse_args(["powercalc-reconcile", "--apply"])
+        self.assertTrue(apply.apply)
+
+    def test_powercalc_plan_matches_unavailable_entry_to_live_suffix(self) -> None:
+        entities = [
+            {
+                "entity_id": "sensor.lamp_power",
+                "platform": "powercalc",
+                "config_entry_id": "old",
+            },
+            {
+                "entity_id": "sensor.lamp_energy",
+                "platform": "powercalc",
+                "config_entry_id": "old",
+            },
+            {
+                "entity_id": "sensor.lamp_power_2",
+                "platform": "powercalc",
+                "config_entry_id": "new",
+            },
+            {
+                "entity_id": "sensor.lamp_energy_2",
+                "platform": "powercalc",
+                "config_entry_id": "new",
+            },
+        ]
+        states = [
+            {"entity_id": "sensor.lamp_power", "state": "unavailable"},
+            {"entity_id": "sensor.lamp_energy", "state": "unavailable"},
+            {"entity_id": "sensor.lamp_power_2", "state": "4.2"},
+            {"entity_id": "sensor.lamp_energy_2", "state": "0.5"},
+        ]
+        entries = [
+            {"entry_id": "old", "domain": "powercalc", "title": "Lamp old"},
+            {"entry_id": "new", "domain": "powercalc", "title": "lamp"},
+        ]
+        preferences = {
+            "device_consumption": [
+                {"stat_consumption": "sensor.lamp_energy"}
+            ]
+        }
+        plan = build_powercalc_reconciliation_plan(
+            entities, states, entries, preferences
+        )
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0]["old_config_entry_id"], "old")
+        self.assertEqual(plan[0]["new_config_entry_id"], "new")
+        self.assertEqual(
+            {item["from"]: item["to"] for item in plan[0]["mappings"]},
+            {
+                "sensor.lamp_energy_2": "sensor.lamp_energy",
+                "sensor.lamp_power_2": "sensor.lamp_power",
+            },
+        )
+        energy_mapping = next(
+            item
+            for item in plan[0]["mappings"]
+            if item["to"] == "sensor.lamp_energy"
+        )
+        self.assertTrue(energy_mapping["energy_dashboard"])
+
+    def test_powercalc_plan_ignores_unmatched_unavailable_entry(self) -> None:
+        plan = build_powercalc_reconciliation_plan(
+            entities=[
+                {
+                    "entity_id": "sensor.retired_energy",
+                    "platform": "powercalc",
+                    "config_entry_id": "old",
+                }
+            ],
+            states=[
+                {"entity_id": "sensor.retired_energy", "state": "unavailable"}
+            ],
+            config_entries=[
+                {"entry_id": "old", "domain": "powercalc", "title": "Retired"}
+            ],
+            energy_preferences={"device_consumption": []},
+        )
+        self.assertEqual(plan, [])
+
+    def test_powercalc_plan_can_resume_after_stale_entry_removal(self) -> None:
+        plan = build_powercalc_reconciliation_plan(
+            entities=[
+                {
+                    "entity_id": "sensor.lamp_power_2",
+                    "platform": "powercalc",
+                    "config_entry_id": "new",
+                },
+                {
+                    "entity_id": "sensor.lamp_energy_2",
+                    "platform": "powercalc",
+                    "config_entry_id": "new",
+                },
+            ],
+            states=[
+                {"entity_id": "sensor.lamp_power_2", "state": "4.2"},
+                {"entity_id": "sensor.lamp_energy_2", "state": "0.5"},
+            ],
+            config_entries=[
+                {"entry_id": "new", "domain": "powercalc", "title": "lamp"}
+            ],
+            energy_preferences={
+                "device_consumption": [
+                    {"stat_consumption": "sensor.lamp_energy"}
+                ]
+            },
+        )
+        self.assertEqual(len(plan), 1)
+        self.assertTrue(plan[0]["resume_only"])
+        self.assertIsNone(plan[0]["old_config_entry_id"])
+
+    def test_powercalc_plan_removes_orphans_when_old_entry_is_absent(self) -> None:
+        plan = build_powercalc_reconciliation_plan(
+            entities=[
+                {
+                    "entity_id": "sensor.lamp_power",
+                    "platform": "powercalc",
+                    "config_entry_id": "deleted-old-entry",
+                },
+                {
+                    "entity_id": "sensor.lamp_energy",
+                    "platform": "powercalc",
+                    "config_entry_id": "deleted-old-entry",
+                },
+                {
+                    "entity_id": "sensor.lamp_power_2",
+                    "platform": "powercalc",
+                    "config_entry_id": "new",
+                },
+                {
+                    "entity_id": "sensor.lamp_energy_2",
+                    "platform": "powercalc",
+                    "config_entry_id": "new",
+                },
+            ],
+            states=[
+                {"entity_id": "sensor.lamp_power", "state": "unavailable"},
+                {"entity_id": "sensor.lamp_energy", "state": "unavailable"},
+                {"entity_id": "sensor.lamp_power_2", "state": "4.2"},
+                {"entity_id": "sensor.lamp_energy_2", "state": "0.5"},
+            ],
+            config_entries=[
+                {"entry_id": "new", "domain": "powercalc", "title": "lamp"}
+            ],
+            energy_preferences={
+                "device_consumption": [
+                    {"stat_consumption": "sensor.lamp_energy"}
+                ]
+            },
+        )
+        self.assertEqual(len(plan), 1)
+        self.assertFalse(plan[0]["resume_only"])
+        self.assertIsNone(plan[0]["old_config_entry_id"])
+        self.assertEqual(
+            plan[0]["orphan_entity_ids"],
+            ["sensor.lamp_energy", "sensor.lamp_power"],
+        )
+
+    def test_powercalc_apply_removes_orphans_and_restores_ids(self) -> None:
+        class FakeHomeAssistant:
+            def __init__(self) -> None:
+                self.registry = [
+                    {
+                        "entity_id": "sensor.lamp_power",
+                        "platform": "powercalc",
+                        "config_entry_id": "deleted-old-entry",
+                    },
+                    {
+                        "entity_id": "sensor.lamp_energy",
+                        "platform": "powercalc",
+                        "config_entry_id": "deleted-old-entry",
+                    },
+                    {
+                        "entity_id": "sensor.lamp_power_2",
+                        "platform": "powercalc",
+                        "config_entry_id": "new",
+                    },
+                    {
+                        "entity_id": "sensor.lamp_energy_2",
+                        "platform": "powercalc",
+                        "config_entry_id": "new",
+                    },
+                ]
+                self.removed: list[str] = []
+                self.renamed: list[tuple[str, str]] = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def entities(self):
+                return list(self.registry)
+
+            def states(self):
+                return [
+                    {
+                        "entity_id": entity["entity_id"],
+                        "state": (
+                            "unavailable"
+                            if entity["entity_id"]
+                            in {"sensor.lamp_power", "sensor.lamp_energy"}
+                            else "1.0"
+                        ),
+                    }
+                    for entity in self.registry
+                ]
+
+            def config_entries(self):
+                return [
+                    {"entry_id": "new", "domain": "powercalc", "title": "lamp"}
+                ]
+
+            def energy_preferences(self):
+                return {
+                    "device_consumption": [
+                        {"stat_consumption": "sensor.lamp_energy"}
+                    ]
+                }
+
+            def snapshot(self):
+                return {"entities": list(self.registry)}
+
+            def remove_entity(self, entity_id):
+                self.removed.append(entity_id)
+                self.registry = [
+                    entity
+                    for entity in self.registry
+                    if entity["entity_id"] != entity_id
+                ]
+
+            def rename_entity(self, entity_id, new_entity_id):
+                self.renamed.append((entity_id, new_entity_id))
+                for entity in self.registry:
+                    if entity["entity_id"] == entity_id:
+                        entity["entity_id"] = new_entity_id
+                        return entity
+                raise AssertionError(f"Unknown fake entity {entity_id}")
+
+        fake_ha = FakeHomeAssistant()
+        with tempfile.TemporaryDirectory() as directory:
+            config = SimpleNamespace(
+                home_assistant=object(),
+                paths=SimpleNamespace(output_dir=Path(directory)),
+            )
+            with (
+                patch(
+                    "ha_zigbee_migrator.cli.HomeAssistantClient",
+                    return_value=fake_ha,
+                ),
+                patch(
+                    "ha_zigbee_migrator.cli.confirm_yes_no",
+                    return_value=True,
+                ),
+                redirect_stdout(StringIO()),
+            ):
+                command_powercalc_reconcile(
+                    config,
+                    SimpleNamespace(apply=True),
+                )
+
+            self.assertEqual(
+                set(fake_ha.removed),
+                {"sensor.lamp_energy", "sensor.lamp_power"},
+            )
+            self.assertEqual(
+                set(fake_ha.renamed),
+                {
+                    ("sensor.lamp_energy_2", "sensor.lamp_energy"),
+                    ("sensor.lamp_power_2", "sensor.lamp_power"),
+                },
+            )
+            self.assertEqual(
+                {entity["entity_id"] for entity in fake_ha.registry},
+                {"sensor.lamp_energy", "sensor.lamp_power"},
+            )
 
     def test_approve_retirement_command_parses(self) -> None:
         args = build_parser().parse_args(
