@@ -1,7 +1,25 @@
 # Supervised deCONZ → Zigbee2MQTT migration toolkit
 
-This toolkit migrates devices one at a time from the existing deCONZ network to
-the **existing Zigbee2MQTT network on the ConBee II**.
+This toolkit safely migrates devices from an existing deCONZ network to the
+**existing Zigbee2MQTT network on the ConBee II**. It supports both:
+
+- **single-device migration**, with guided pairing, entity-ID preservation and
+  verification; and
+- **batch migration of identical devices**, pairing multiple matching devices in
+  one window while tracking each device by its saved IEEE address.
+
+```bash
+# Migrate one selected device
+./run.sh migrate D020
+
+# Migrate four identical devices in one guarded pairing window
+./run.sh migrate-batch D007 D008 D009 D010 --join-via all
+```
+
+Batch pairing does not merge the devices or guess their identities from join
+order. Renaming, entity mapping and verification remain separately tracked for
+every device, and interrupted batches can be resumed without re-pairing devices
+that already succeeded.
 
 It deliberately does **not**:
 
