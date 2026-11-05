@@ -1,5 +1,7 @@
 # Supervised deCONZ → Zigbee2MQTT migration toolkit
 
+![#f03c15](https://placehold.co/15x15/f03c15/f03c15.png) ***`This is not a magic-all-in-one tool, it requires HA knowledge and probably still some aftercare`*** ![#f03c15](https://placehold.co/15x15/f03c15/f03c15.png)
+
 This toolkit safely migrates devices from an existing deCONZ network to the
 **existing Zigbee2MQTT network on the ConBee II**. It supports both:
 
