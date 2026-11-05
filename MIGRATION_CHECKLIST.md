@@ -19,6 +19,9 @@ Keep the **ConBee II connected to Zigbee2MQTT** throughout this project and do n
 - [ ] Check that the reported IEEE/model is the expected physical device.
 - [ ] Answer `Y` to accept the device and rename only when both are correct.
 - [ ] Review the suggested old-to-new entity mappings.
+- [ ] For every unresolved entity, read the explanation and any configuration
+      references before answering the skip prompt. Enter/`N` stops safely; `Y`
+      records a deliberate skip and does not preserve that old entity ID.
 - [ ] Confirm the entity-ID change only if every displayed mapping is correct.
 - [ ] If the wizard reports ambiguity, fill only those worksheet rows and rerun it.
 - [ ] Test dashboards, automations, scenes, scripts and voice commands.

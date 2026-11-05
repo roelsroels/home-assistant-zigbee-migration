@@ -33,6 +33,10 @@ confirmation. Pressing Enter selects the safe default, `No`. The first safety
 step pins the current Z2M coordinator IEEE address and network identity. Later
 pairing commands stop if that identity changes.
 
+Interactive terminal output uses restrained colors to distinguish progress,
+warnings, successful checkpoints, and errors. Redirected output stays plain
+text. Set `NO_COLOR=1` if you prefer plain text in an interactive terminal too.
+
 ## Prerequisites
 
 - Python 3.11 or newer.
@@ -96,7 +100,8 @@ Then run `migrate-next`. The wizard:
 4. Resumes the last completed stage if a previous run was interrupted.
 5. Opens the short coordinator-only join window only when actually required.
 6. Asks you to confirm the interviewed IEEE/model before renaming it.
-7. Suggests entity mappings conservatively and shows them before applying.
+7. Suggests entity mappings conservatively. For each entity that has no safe
+   match, it explains why and asks whether to deliberately skip it.
 8. Requires a separate `Y/N` confirmation before entity IDs are changed.
 9. Verifies that the replacement entities are healthy and no longer deCONZ.
 10. Marks the device verified and displays the next suggested device.
@@ -194,8 +199,15 @@ The wizard requires an additional Y/N confirmation for router-assisted joining.
 This changes only the temporary pairing path; the pinned coordinator and network
 identity remain unchanged.
 
-If a mapping is ambiguous, the wizard stops at that device and identifies the
-few unresolved worksheet cells. It will not advance or guess.
+If a mapping is ambiguous, the wizard will not guess. It explains whether no
+matching entity was created or whether multiple candidates remain, shows useful
+references found by the latest configuration audit, and asks separately for
+each unresolved entity whether it should be marked `skip`. The safe default is
+`N`: the row stays unresolved and the workflow stops at that device. Answering
+`Y` records the deliberate skip in `entity-map.csv`; after all unresolved rows
+are either mapped or explicitly skipped, the same device workflow continues.
+Skipping means that old entity ID is not preserved, so any displayed references
+must be reviewed manually.
 Configuration and diagnostic entities are excluded when the wizard evaluates an
 otherwise unique functional entity in the same domain. For example, a plug's
 `child_lock` configuration switch cannot make its primary on/off switch appear
@@ -335,8 +347,13 @@ selected migration-plan row.
 
 ### 7. Prepare entity mappings
 
-Open the pair-result JSON and `entity-map.csv`. Fill `new_entity_id` for each old
-entity you want to preserve.
+The normal `migrate` and `migrate-next` workflows suggest mappings
+automatically. When a safe mapping is impossible, they explain the reason and
+offer a default-safe Y/N choice to record that row as deliberately skipped.
+
+For manual review, open the pair-result JSON and `entity-map.csv`. Fill
+`new_entity_id` for each old entity you want to preserve, or set its status to
+`skip` only after deciding that the old entity can be retired.
 
 Run a dry-run:
 

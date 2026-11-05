@@ -11,6 +11,7 @@ import uuid
 
 import paho.mqtt.client as mqtt
 
+from .console import success, warning
 from .config import MqttConfig
 
 
@@ -223,9 +224,11 @@ class Z2MClient:
             else join_via
         )
         print(
-            f"Joining is open through {join_description} for {seconds} seconds. "
-            f"Factory-reset exactly {expected_count} intended device"
-            f"{'s' if expected_count != 1 else ''} now."
+            warning(
+                f"Joining is open through {join_description} for {seconds} seconds. "
+                f"Factory-reset exactly {expected_count} intended device"
+                f"{'s' if expected_count != 1 else ''} now."
+            )
         )
         successes: dict[str, dict[str, Any]] = {}
         candidates: set[str] = set()
@@ -256,13 +259,17 @@ class Z2MClient:
             interview_deadline = time.monotonic() + interview_timeout
             if expected_count == 1:
                 print(
-                    "The expected device has appeared; joining is closed while its "
-                    "interview finishes."
+                    success(
+                        "The expected device has appeared; joining is closed while "
+                        "its interview finishes."
+                    )
                 )
             else:
                 print(
-                    f"All {expected_count} expected devices have appeared; joining "
-                    "is closed while their interviews finish."
+                    success(
+                        f"All {expected_count} expected devices have appeared; "
+                        "joining is closed while their interviews finish."
+                    )
                 )
 
         def inspect_inventory() -> None:
@@ -362,7 +369,7 @@ class Z2MClient:
         finally:
             if not join_closed:
                 self.close_join()
-            print("Joining has been closed.")
+            print(success("Joining has been closed."))
         inspect_inventory()
         if unexpected:
             raise Z2MError(

@@ -9,6 +9,18 @@ import sys
 import time
 from typing import Any
 
+from .console import (
+    BOLD,
+    GREEN,
+    RED,
+    YELLOW,
+    heading as section_heading,
+    print_error,
+    status_value,
+    styled,
+    success,
+    warning,
+)
 from .config import AppConfig, ConfigError, load_config
 from .ha import HomeAssistantClient
 from .inventory import (
@@ -90,11 +102,14 @@ def print_suggested_device(
 ) -> None:
     plan = load_plan(paths(config)["plan"])
     complete = sum(item.status in {"verified", "skip"} for item in plan)
-    print(f"\nMigration progress: {complete}/{len(plan)} devices complete")
-    print(heading)
+    print(
+        f"\n{section_heading('Migration progress')}: "
+        f"{complete}/{len(plan)} devices complete"
+    )
+    print(section_heading(heading))
     print(f"  ID:     {row.migration_id}")
     print(f"  Name:   {row.old_device_name}")
-    print(f"  Status: {row.status}")
+    print(f"  Status: {status_value(row.status)}")
     print(f"  Target: {row.target_friendly_name}")
     print("  Existing entities:")
     for entity_id in row.old_entity_ids:
@@ -130,11 +145,11 @@ def command_status(config: AppConfig, _args: argparse.Namespace) -> None:
     plan = load_plan(plan_path)
     groups = group_plan_by_progress(plan)
     remaining = len(groups["pending"]) + len(groups["partial"])
-    print("Migration status")
+    print(section_heading("Migration status"))
     print(f"  Total planned:          {len(plan)}")
-    print(f"  Remaining to migrate:   {remaining}")
-    print(f"  Finished successfully:  {len(groups['verified'])}")
-    print(f"  Deliberately skipped:   {len(groups['skipped'])}")
+    print(warning(f"  Remaining to migrate:   {remaining}"))
+    print(success(f"  Finished successfully:  {len(groups['verified'])}"))
+    print(warning(f"  Deliberately skipped:   {len(groups['skipped'])}"))
 
     sections = (
         ("Remaining — not started", groups["pending"]),
@@ -143,14 +158,15 @@ def command_status(config: AppConfig, _args: argparse.Namespace) -> None:
         ("Deliberately skipped", groups["skipped"]),
     )
     for heading, rows in sections:
-        print(f"\n{heading} ({len(rows)}):")
+        print(f"\n{section_heading(heading)} ({len(rows)}):")
         if not rows:
             print("  (none)")
             continue
         for row in rows:
             print(
                 f"  {row.migration_id}  {row.old_device_name} "
-                f"[status: {row.status}; target: {row.target_friendly_name}]"
+                f"[status: {status_value(row.status)}; "
+                f"target: {row.target_friendly_name}]"
             )
 
 
@@ -372,7 +388,7 @@ def command_preflight(config: AppConfig, _args: argparse.Namespace) -> None:
         raise SafetyError(
             "Z2M currently has permit-join enabled. Close it before continuing."
         )
-    print("Preflight successful")
+    print(success("Preflight successful"))
     print(f"Home Assistant: {snapshot['config'].get('location_name')}")
     print(f"deCONZ entities: {deconz_count}")
     print(f"MQTT entities: {mqtt_count}")
@@ -852,6 +868,13 @@ def command_verify(config: AppConfig, _args: argparse.Namespace) -> bool:
         report = verify_expected_entities(
             ha.entities(), ha.states(), selected_map
         )
+        if report.get("all_entities_skipped"):
+            print(
+                warning(
+                    "Every entity for this device was deliberately skipped; "
+                    "there are no replacement entity IDs to verify."
+                )
+            )
         grace_seconds = config.safety.verification_grace_seconds
         if grace_seconds and verification_is_waiting_for_unknown_states(report):
             waiting_ids = [
@@ -894,8 +917,12 @@ def command_verify(config: AppConfig, _args: argparse.Namespace) -> bool:
             marker = "WARN"
         else:
             marker = "OK" if item["healthy"] else "CHECK"
+        marker_color = (
+            YELLOW if marker == "WARN" else GREEN if marker == "OK" else RED
+        )
+        rendered_marker = styled(f"[{marker}]", BOLD, marker_color)
         print(
-            f"[{marker}] {item['entity_id']}: platform={item['platform']}, "
+            f"{rendered_marker} {item['entity_id']}: platform={item['platform']}, "
             f"state={item['state']}"
         )
         if item.get("diagnostic_pending"):
@@ -945,12 +972,174 @@ def command_verify(config: AppConfig, _args: argparse.Namespace) -> bool:
     update_plan_status(output["plan"], _args.migration_id, "verified")
     if accepted_pending_states:
         print(
-            f"{_args.migration_id} is now marked verified with pending live readings "
-            "recorded in the verification report."
+            success(
+                f"{_args.migration_id} is now marked verified with pending live "
+                "readings recorded in the verification report."
+            )
         )
     else:
-        print(f"{_args.migration_id} is now marked verified.")
+        print(success(f"{_args.migration_id} is now marked verified."))
     return True
+
+
+def meaningful_reference_hits(
+    reports_dir: Path,
+    entity_id: str,
+) -> list[dict[str, Any]]:
+    """Return useful config references, excluding HA registry and trace noise."""
+    reports = sorted(reports_dir.glob("reference-audit-*.json"))
+    if not reports:
+        return []
+    try:
+        rows = read_json(reports[-1])
+    except (OSError, ValueError, TypeError):
+        return []
+    ignored_fragments = (
+        "/.storage/core.entity_registry",
+        "/.storage/core.device_registry",
+        "/.storage/trace.saved_traces",
+        "/.migration_backup/",
+    )
+    useful = []
+    for row in rows if isinstance(rows, list) else []:
+        path = str(row.get("path") or "").replace("\\", "/")
+        if row.get("reference") != entity_id:
+            continue
+        if any(fragment in path for fragment in ignored_fragments):
+            continue
+        if Path(path).name.startswith("tmp"):
+            continue
+        useful.append(row)
+    return useful
+
+
+def unresolved_mapping_details(
+    old_entity: dict[str, Any],
+    new_entities: list[dict[str, Any]],
+    reserved_new_ids: set[str],
+    reference_hits: list[dict[str, Any]],
+    reference_audit_available: bool = True,
+) -> list[str]:
+    """Explain why an old entity has no safe automatic replacement."""
+    old_id = old_entity["entity_id"]
+    domain = old_id.split(".", 1)[0]
+    label = (
+        old_entity.get("name")
+        or old_entity.get("original_name")
+        or old_id
+    )
+    category = old_entity.get("entity_category") or "standard"
+    same_domain = sorted(
+        item["entity_id"]
+        for item in new_entities
+        if item["entity_id"].split(".", 1)[0] == domain
+        and item["entity_id"] not in reserved_new_ids
+    )
+    details = [f"Role: {label} ({domain}; {category} entity)"]
+    if same_domain:
+        details.append(
+            "Reason: no unique semantic match could be proven. Unused MQTT "
+            f"candidate{'s' if len(same_domain) != 1 else ''}: "
+            + ", ".join(same_domain)
+        )
+    else:
+        details.append(
+            f"Reason: Zigbee2MQTT did not create an unused {domain}.* entity "
+            "that can safely inherit this entity ID."
+        )
+    if category == "config" or domain in {"number", "select", "button"}:
+        details.append(
+            "This looks like a device setting. Zigbee2MQTT may expose the same "
+            "setting only in its device options, not as a Home Assistant entity."
+        )
+    elif category == "diagnostic":
+        details.append(
+            "This is diagnostic data; the new integration may not expose an "
+            "equivalent entity."
+        )
+    if reference_hits:
+        details.append(
+            f"Important: the latest reference audit found {len(reference_hits)} "
+            "configuration reference(s):"
+        )
+        for hit in reference_hits[:3]:
+            details.append(f"  {hit.get('path')}:{hit.get('line')}")
+        if len(reference_hits) > 3:
+            details.append(f"  ...and {len(reference_hits) - 3} more")
+    elif reference_audit_available:
+        details.append(
+            "The latest reference audit found no external configuration references "
+            "(Home Assistant registry and trace history are ignored)."
+        )
+    else:
+        details.append(
+            "No reference-audit report is available. Review Home Assistant "
+            "configuration references manually before skipping."
+        )
+    return details
+
+
+def offer_unresolved_mapping_skips(
+    map_path: Path,
+    reports_dir: Path,
+    migration_id: str,
+    worksheet: list[dict[str, str]],
+    unresolved: list[str],
+    old_entities: list[dict[str, Any]],
+    new_entities: list[dict[str, Any]],
+) -> list[str]:
+    """Explain unresolved rows and offer an explicit, durable skip per row."""
+    old_by_id = {item["entity_id"]: item for item in old_entities}
+    reserved_new_ids = {
+        row["new_entity_id"]
+        for row in worksheet
+        if row["migration_id"] == migration_id and row.get("new_entity_id")
+    }
+    reference_audit_available = any(
+        reports_dir.glob("reference-audit-*.json")
+    )
+    remaining = []
+    for entity_id in unresolved:
+        entity = old_by_id.get(entity_id, {"entity_id": entity_id})
+        references = meaningful_reference_hits(reports_dir, entity_id)
+        print("\n" + warning(f"No safe automatic mapping for {entity_id}"))
+        for detail in unresolved_mapping_details(
+            entity,
+            new_entities,
+            reserved_new_ids,
+            references,
+            reference_audit_available,
+        ):
+            print(f"  {detail}")
+        print(
+            warning(
+                "  Skipping means this old entity ID will not be preserved. Any "
+                "listed references must be reviewed manually."
+            )
+        )
+        should_skip = confirm_yes_no(
+            f"Mark {entity_id} as deliberately skipped so this device migration "
+            "can continue?",
+            prompt="Mark as skipped? [y/N]: ",
+        )
+        if not should_skip:
+            remaining.append(entity_id)
+            print(warning("Left unresolved; the workflow will stop safely."))
+            continue
+        for row in worksheet:
+            if (
+                row["migration_id"] == migration_id
+                and row["old_entity_id"] == entity_id
+            ):
+                row["new_entity_id"] = ""
+                row["status"] = "skip"
+                row["notes"] = (
+                    "User confirmed skip: no safe MQTT replacement was inferred"
+                )
+                break
+        write_entity_map(map_path, worksheet)
+        print(success(f"Recorded {entity_id} as deliberately skipped."))
+    return remaining
 
 
 def suggest_mappings_for_device(config: AppConfig, migration_id: str) -> list[str]:
@@ -1035,13 +1224,19 @@ def suggest_mappings_for_device(config: AppConfig, migration_id: str) -> list[st
         and row["status"] not in {"applied", "verified", "skip"}
     ]
 
-    print("\nSuggested entity mappings:")
+    print("\n" + section_heading("Suggested entity mappings"))
     for old_id, (new_id, reason) in sorted(suggestions.items()):
-        print(f"  {old_id} <- {new_id}  ({reason})")
+        print(success(f"  {old_id} <- {new_id}") + f"  ({reason})")
     if unresolved:
-        print("Could not safely infer these mappings:")
-        for entity_id in unresolved:
-            print(f"  - {entity_id}")
+        unresolved = offer_unresolved_mapping_skips(
+            output["map"],
+            output["reports"],
+            migration_id,
+            worksheet,
+            unresolved,
+            old_entities,
+            new_entities,
+        )
     return unresolved
 
 
@@ -1085,9 +1280,11 @@ def run_device_workflow(
         unresolved = suggest_mappings_for_device(config, row.migration_id)
         if unresolved:
             print(
-                f"\nStopped safely at {row.migration_id}. Fill only the unresolved "
-                f"new_entity_id cells in {paths(config)['map']}, or mark a row skip "
-                f"after deliberate review. Then run {resume_command} again."
+                warning(
+                    f"\nStopped safely at {row.migration_id}. One or more entities "
+                    "were left unresolved. Rerun the command to review them again, "
+                    f"or edit only those rows in {paths(config)['map']}."
+                )
             )
             return
         command_apply_entity_map(
@@ -1340,8 +1537,10 @@ def command_migrate_batch(config: AppConfig, args: argparse.Namespace) -> None:
             return
 
     print(
-        "\nBatch complete: every selected device is verified. Other plan rows "
-        "were left unchanged."
+        success(
+            "\nBatch complete: every selected device is verified. Other plan rows "
+            "were left unchanged."
+        )
     )
 
 
@@ -1538,12 +1737,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except KeyboardInterrupt:
         print(
-            "\nCancelled by user. Any active Zigbee joining request has been "
-            "closed where possible, and completed migration checkpoints remain "
-            "available for a safe retry.",
+            warning(
+                "\nCancelled by user. Any active Zigbee joining request has been "
+                "closed where possible, and completed migration checkpoints remain "
+                "available for a safe retry.",
+                stream=sys.stderr,
+            ),
             file=sys.stderr,
         )
         return 130
     except (ConfigError, SafetyError, RuntimeError) as err:
-        print(f"ERROR: {err}", file=sys.stderr)
+        print_error(str(err))
         return 2

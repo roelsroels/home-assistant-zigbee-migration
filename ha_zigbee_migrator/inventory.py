@@ -356,7 +356,15 @@ def verify_expected_entities(
                 "healthy": healthy,
             }
         )
+    all_deliberately_skipped = bool(entity_map) and all(
+        row.get("status") == "skip" for row in entity_map
+    )
     return {
         "results": results,
-        "healthy": all(item["healthy"] for item in results) if results else False,
+        "all_entities_skipped": all_deliberately_skipped,
+        "healthy": (
+            all(item["healthy"] for item in results)
+            if results
+            else all_deliberately_skipped
+        ),
     }

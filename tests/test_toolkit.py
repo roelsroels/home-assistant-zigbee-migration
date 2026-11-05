@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from ha_zigbee_migrator.console import print_error, styled
 from ha_zigbee_migrator.config import ConfigError, _env_name
 from ha_zigbee_migrator.ha import HomeAssistantClient, HomeAssistantError
 from ha_zigbee_migrator.cli import (
@@ -16,16 +17,21 @@ from ha_zigbee_migrator.cli import (
     build_parser,
     group_plan_by_progress,
     main,
+    meaningful_reference_hits,
     normalize_ieee,
+    offer_unresolved_mapping_skips,
     successful_z2m_device,
+    unresolved_mapping_details,
     verification_is_waiting_for_unknown_states,
 )
 from ha_zigbee_migrator.z2m import Z2MClient, Z2MError
 from ha_zigbee_migrator.inventory import (
     backup_entity_id,
+    load_entity_map,
     scan_references,
     suggest_entity_mappings,
     verify_expected_entities,
+    write_entity_map,
 )
 from ha_zigbee_migrator.safety import (
     SafetyError,
@@ -34,10 +40,33 @@ from ha_zigbee_migrator.safety import (
     coordinator_identity,
     require_confirmation,
     slugify,
+    write_json,
 )
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_terminal_styling_has_plain_and_colored_modes(self) -> None:
+        with patch(
+            "ha_zigbee_migrator.console.supports_color",
+            return_value=False,
+        ):
+            self.assertEqual(styled("done", "32"), "done")
+        with patch(
+            "ha_zigbee_migrator.console.supports_color",
+            return_value=True,
+        ):
+            self.assertIn("\033[32m", styled("done", "32"))
+
+    def test_error_presentation_is_actionable_without_traceback(self) -> None:
+        errors = StringIO()
+        with redirect_stderr(errors):
+            print_error("First line\nSecond line")
+        rendered = errors.getvalue()
+        self.assertIn("ERROR", rendered)
+        self.assertIn("  First line", rendered)
+        self.assertIn("Workflow stopped safely", rendered)
+        self.assertNotIn("Traceback", rendered)
+
     def test_verification_waits_only_for_unknown_mqtt_states(self) -> None:
         unknown = {
             "results": [
@@ -209,6 +238,21 @@ class ToolkitTests(unittest.TestCase):
         )
         self.assertTrue(report["healthy"])
         self.assertTrue(report["results"][0]["diagnostic_pending"])
+
+    def test_all_deliberately_skipped_entities_can_complete_verification(self) -> None:
+        report = verify_expected_entities(
+            entities=[],
+            states=[],
+            entity_map=[
+                {
+                    "old_entity_id": "number.motion_duration",
+                    "status": "skip",
+                }
+            ],
+        )
+        self.assertTrue(report["healthy"])
+        self.assertTrue(report["all_entities_skipped"])
+        self.assertEqual(report["results"], [])
 
     def test_unavailable_diagnostic_still_blocks_verification(self) -> None:
         report = verify_expected_entities(
@@ -640,6 +684,119 @@ class ToolkitTests(unittest.TestCase):
             self.assertEqual(count, 1)
             self.assertEqual(source.read_text(encoding="utf-8"), "entity_id: light.hall\n")
             self.assertTrue(output.exists())
+
+    def test_reference_hits_ignore_registry_and_trace_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reports = Path(directory)
+            write_json(
+                reports / "reference-audit-20261105T000000Z.json",
+                [
+                    {
+                        "reference": "number.motion_duration",
+                        "path": "/config/.storage/core.entity_registry",
+                        "line": 10,
+                    },
+                    {
+                        "reference": "number.motion_duration",
+                        "path": "/config/automations.yaml",
+                        "line": 42,
+                    },
+                ],
+            )
+            hits = meaningful_reference_hits(
+                reports,
+                "number.motion_duration",
+            )
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["path"], "/config/automations.yaml")
+
+    def test_unresolved_config_entity_explanation_is_actionable(self) -> None:
+        details = unresolved_mapping_details(
+            {
+                "entity_id": "number.motion_duration",
+                "original_name": "Duration",
+                "entity_category": "config",
+            },
+            [{"entity_id": "binary_sensor.motion_occupancy"}],
+            set(),
+            [],
+        )
+        rendered = "\n".join(details)
+        self.assertIn("did not create an unused number.* entity", rendered)
+        self.assertIn("device setting", rendered)
+        self.assertIn("no external configuration references", rendered)
+
+    def test_unresolved_mapping_can_be_confirmed_as_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path = root / "entity-map.csv"
+            reports = root / "reports"
+            reports.mkdir()
+            worksheet = [
+                {
+                    "migration_id": "D013",
+                    "old_entity_id": "number.motion_duration",
+                    "new_entity_id": "",
+                    "status": "pending",
+                    "notes": "",
+                }
+            ]
+            write_entity_map(map_path, worksheet)
+            with patch("builtins.input", return_value="y"), redirect_stdout(
+                StringIO()
+            ):
+                remaining = offer_unresolved_mapping_skips(
+                    map_path,
+                    reports,
+                    "D013",
+                    worksheet,
+                    ["number.motion_duration"],
+                    [
+                        {
+                            "entity_id": "number.motion_duration",
+                            "original_name": "Duration",
+                            "entity_category": "config",
+                        }
+                    ],
+                    [{"entity_id": "binary_sensor.motion_occupancy"}],
+                )
+            saved = load_entity_map(map_path)[0]
+        self.assertEqual(remaining, [])
+        self.assertEqual(saved["status"], "skip")
+        self.assertEqual(saved["new_entity_id"], "")
+        self.assertIn("User confirmed skip", saved["notes"])
+
+    def test_unresolved_mapping_defaults_to_stop_without_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            map_path = root / "entity-map.csv"
+            reports = root / "reports"
+            reports.mkdir()
+            worksheet = [
+                {
+                    "migration_id": "D013",
+                    "old_entity_id": "number.motion_duration",
+                    "new_entity_id": "",
+                    "status": "pending",
+                    "notes": "",
+                }
+            ]
+            write_entity_map(map_path, worksheet)
+            with patch("builtins.input", return_value=""), redirect_stdout(
+                StringIO()
+            ):
+                remaining = offer_unresolved_mapping_skips(
+                    map_path,
+                    reports,
+                    "D013",
+                    worksheet,
+                    ["number.motion_duration"],
+                    [{"entity_id": "number.motion_duration"}],
+                    [],
+                )
+            saved = load_entity_map(map_path)[0]
+        self.assertEqual(remaining, ["number.motion_duration"])
+        self.assertEqual(saved["status"], "pending")
 
     def test_mapping_suggestions_are_conservative(self) -> None:
         old = [

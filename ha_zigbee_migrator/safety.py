@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from .console import BOLD, YELLOW, styled, warning
+
 
 class SafetyError(RuntimeError):
     """Raised when a safety condition fails."""
@@ -18,16 +20,23 @@ def timestamp_slug() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def confirm_yes_no(message: str) -> bool:
+def confirm_yes_no(
+    message: str,
+    prompt: str = "Continue? [y/N]: ",
+) -> bool:
     """Ask for a default-safe, case-insensitive Y/N confirmation."""
-    print(f"\nSAFETY CONFIRMATION: {message}")
+    print(
+        "\n"
+        + styled("SAFETY CONFIRMATION", BOLD, YELLOW)
+        + f": {message}"
+    )
     while True:
-        entered = input("Continue? [y/N]: ").strip().lower()
+        entered = input(styled(prompt, YELLOW)).strip().lower()
         if entered in {"y", "yes"}:
             return True
         if entered in {"", "n", "no"}:
             return False
-        print("Please answer Y or N.")
+        print(warning("Please answer Y or N."))
 
 
 def require_confirmation(message: str) -> None:
