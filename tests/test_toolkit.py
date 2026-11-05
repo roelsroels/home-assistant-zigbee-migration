@@ -12,6 +12,7 @@ from ha_zigbee_migrator.ha import HomeAssistantClient, HomeAssistantError
 from ha_zigbee_migrator.cli import (
     COMMANDS,
     already_has_target_name,
+    batch_device_signature,
     build_parser,
     group_plan_by_progress,
     main,
@@ -323,6 +324,89 @@ class ToolkitTests(unittest.TestCase):
                 self.assertEqual(len(opening_payloads), 1)
                 self.assertEqual(opening_payloads[0].get("device"), expected_device)
 
+    def test_batch_pair_waits_for_every_exact_ieee(self) -> None:
+        expected = {
+            "0x00158d0000000001",
+            "0x00158d0000000002",
+        }
+        client = Z2MClient.__new__(Z2MClient)
+        client.config = SimpleNamespace(base_topic="zigbee2mqtt")
+        client.events = Queue()
+        client.messages = {}
+        client.client = SimpleNamespace(subscribe=lambda _topic: None)
+        permit_requests: list[dict[str, object]] = []
+
+        client.retained = MethodType(lambda _self, _suffix: [], client)
+
+        def request(
+            self: Z2MClient, path: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            if path == "permit_join":
+                permit_requests.append(payload.copy())
+            if payload.get("time"):
+                for ieee in sorted(expected):
+                    self.events.put(
+                        {"type": "device_joined", "data": {"ieee_address": ieee}}
+                    )
+                for ieee in sorted(expected):
+                    self.events.put(
+                        {
+                            "type": "device_interview",
+                            "data": {
+                                "ieee_address": ieee,
+                                "status": "successful",
+                            },
+                        }
+                    )
+            return {}
+
+        client.request = MethodType(request, client)
+        result = client.supervised_pair_many(
+            0.1,
+            expected_ieees=expected,
+            interview_timeout=10,
+            join_via="all",
+        )
+        self.assertEqual(set(result), expected)
+        self.assertEqual(permit_requests[0]["time"], 0.1)
+        self.assertNotIn("device", permit_requests[0])
+        self.assertEqual(permit_requests[-1]["time"], 0)
+
+    def test_batch_pair_rejects_an_unexpected_fresh_device(self) -> None:
+        expected = {
+            "0x00158d0000000001",
+            "0x00158d0000000002",
+        }
+        unexpected = "0x00158d0000009999"
+        client = Z2MClient.__new__(Z2MClient)
+        client.config = SimpleNamespace(base_topic="zigbee2mqtt")
+        client.events = Queue()
+        client.messages = {}
+        client.client = SimpleNamespace(subscribe=lambda _topic: None)
+        permit_requests: list[dict[str, object]] = []
+        client.retained = MethodType(lambda _self, _suffix: [], client)
+
+        def request(
+            self: Z2MClient, path: str, payload: dict[str, object]
+        ) -> dict[str, object]:
+            if path == "permit_join":
+                permit_requests.append(payload.copy())
+            if payload.get("time"):
+                self.events.put(
+                    {
+                        "type": "device_joined",
+                        "data": {"ieee_address": unexpected},
+                    }
+                )
+            return {}
+
+        client.request = MethodType(request, client)
+        with self.assertRaises(Z2MError) as caught:
+            client.supervised_pair_many(0.1, expected_ieees=expected)
+        self.assertIn("unexpected device", str(caught.exception).lower())
+        self.assertIn(unexpected, str(caught.exception))
+        self.assertEqual(permit_requests[-1]["time"], 0)
+
     def test_failed_interview_has_immediate_recovery_instructions(self) -> None:
         ieee = "0x00158d0000000001"
         client = Z2MClient.__new__(Z2MClient)
@@ -455,6 +539,33 @@ class ToolkitTests(unittest.TestCase):
         )
         self.assertEqual(args.migration_id, "D024")
         self.assertEqual(args.join_via, "boiler_router")
+
+    def test_batch_migration_command_parses(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "migrate-batch",
+                "D007",
+                "D008",
+                "D009",
+                "D010",
+                "--join-via",
+                "all",
+            ]
+        )
+        self.assertEqual(args.command, "migrate-batch")
+        self.assertEqual(args.migration_ids, ["D007", "D008", "D009", "D010"])
+        self.assertEqual(args.join_via, "all")
+
+    def test_batch_signature_uses_saved_manufacturer_and_model(self) -> None:
+        self.assertEqual(
+            batch_device_signature(
+                {
+                    "manufacturer": "IKEA of Sweden",
+                    "model": "TRADFRI bulb GU10 WW 400lm",
+                }
+            ),
+            ("IKEA of Sweden", "TRADFRI bulb GU10 WW 400lm"),
+        )
 
     def test_join_routers_command_parses(self) -> None:
         args = build_parser().parse_args(["join-routers"])

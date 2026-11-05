@@ -130,13 +130,47 @@ class Z2MClient:
         interview_timeout: int = 90,
         join_via: str = "coordinator",
     ) -> dict[str, Any]:
-        """Join one device and keep watching after joining closes.
+        """Join exactly one device and return its successful interview."""
+        expected = {expected_ieee} if expected_ieee else None
+        results = self._supervised_pair_expected(
+            seconds=seconds,
+            expected_ieees=expected,
+            expected_count=1,
+            interview_timeout=interview_timeout,
+            join_via=join_via,
+        )
+        return next(iter(results.values()))
 
-        Zigbee2MQTT can finish interviewing after the permit-join timer ends, and
-        MQTT events can occasionally be missed. Therefore both bridge events and
-        the retained bridge/devices inventory are observed. Joining is closed as
-        soon as the first candidate appears, while interview monitoring continues.
-        """
+    def supervised_pair_many(
+        self,
+        seconds: int,
+        expected_ieees: set[str],
+        interview_timeout: int = 90,
+        join_via: str = "coordinator",
+    ) -> dict[str, dict[str, Any]]:
+        """Join a fixed set of known devices in one guarded pairing window."""
+        normalized = {
+            str(ieee).strip().lower() for ieee in expected_ieees if str(ieee).strip()
+        }
+        if not normalized:
+            raise Z2MError("expected_ieees cannot be empty")
+        return self._supervised_pair_expected(
+            seconds=seconds,
+            expected_ieees=normalized,
+            expected_count=len(normalized),
+            interview_timeout=interview_timeout,
+            join_via=join_via,
+        )
+
+    def _supervised_pair_expected(
+        self,
+        seconds: int,
+        expected_ieees: set[str] | None,
+        expected_count: int,
+        interview_timeout: int,
+        join_via: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Observe events and retained inventory until all expected devices finish."""
         devices_topic = f"{self.base}/bridge/devices"
         initial_devices = self.retained("bridge/devices")
 
@@ -161,7 +195,11 @@ class Z2MClient:
             ieee: inventory_fingerprint(device)
             for ieee, device in initial_by_ieee.items()
         }
-        expected_ieee = expected_ieee.lower() if expected_ieee else None
+        expected_ieees = (
+            {ieee.lower() for ieee in expected_ieees}
+            if expected_ieees is not None
+            else None
+        )
         while not self.events.empty():
             try:
                 self.events.get_nowait()
@@ -186,24 +224,46 @@ class Z2MClient:
         )
         print(
             f"Joining is open through {join_description} for {seconds} seconds. "
-            "Factory-reset exactly one intended device now."
+            f"Factory-reset exactly {expected_count} intended device"
+            f"{'s' if expected_count != 1 else ''} now."
         )
         successes: dict[str, dict[str, Any]] = {}
         candidates: set[str] = set()
+        unexpected: set[str] = set()
+        failed: set[str] = set()
         observed: list[dict[str, Any]] = []
         join_deadline = time.monotonic() + seconds
         interview_deadline: float | None = None
         join_closed = False
-        interview_failed = False
         fresh_event_ieees: set[str] = set()
 
-        def eligible_event(ieee: Any) -> str | None:
-            if not ieee:
-                return None
-            normalized = str(ieee).lower()
-            if normalized not in existing or normalized == expected_ieee:
-                return normalized
-            return None
+        def all_candidates_seen() -> bool:
+            if expected_ieees is None:
+                return len(candidates) >= expected_count
+            return expected_ieees.issubset(candidates)
+
+        def all_successful() -> bool:
+            if expected_ieees is None:
+                return len(successes) >= expected_count
+            return expected_ieees.issubset(successes)
+
+        def close_after_candidates() -> None:
+            nonlocal join_closed, interview_deadline
+            if join_closed or not all_candidates_seen():
+                return
+            self.close_join()
+            join_closed = True
+            interview_deadline = time.monotonic() + interview_timeout
+            if expected_count == 1:
+                print(
+                    "The expected device has appeared; joining is closed while its "
+                    "interview finishes."
+                )
+            else:
+                print(
+                    f"All {expected_count} expected devices have appeared; joining "
+                    "is closed while their interviews finish."
+                )
 
         def inspect_inventory() -> None:
             inventory = self.messages.get(devices_topic)
@@ -216,6 +276,12 @@ class Z2MClient:
                 if not raw_ieee:
                     continue
                 ieee = str(raw_ieee).lower()
+                if expected_ieees is not None and ieee not in expected_ieees:
+                    if ieee not in existing:
+                        unexpected.add(ieee)
+                    continue
+                if expected_ieees is None and ieee in existing:
+                    continue
                 successful = bool(device.get("interview_completed")) or str(
                     device.get("interview_state", "")
                 ).upper() == "SUCCESSFUL"
@@ -224,7 +290,7 @@ class Z2MClient:
                         inventory_fingerprint(device)
                         != initial_fingerprints.get(ieee)
                     )
-                    if ieee != expected_ieee or not (
+                    if not (
                         successful or changed or ieee in fresh_event_ieees
                     ):
                         continue
@@ -249,20 +315,18 @@ class Z2MClient:
                     event = self.events.get(timeout=min(2, deadline - now))
                 except Empty:
                     inspect_inventory()
-                    if candidates and not join_closed:
+                    if unexpected and not join_closed:
                         self.close_join()
                         join_closed = True
-                        interview_deadline = time.monotonic() + interview_timeout
-                        print(
-                            "A candidate device appeared; joining is closed while "
-                            "its interview finishes."
-                        )
-                    if len(successes) == 1:
+                        break
+                    close_after_candidates()
+                    if all_successful() or failed:
                         break
                     continue
                 event_type = event.get("type")
                 data = event.get("data") or {}
-                ieee = eligible_event(data.get("ieee_address"))
+                raw_ieee = data.get("ieee_address")
+                ieee = str(raw_ieee).lower() if raw_ieee else None
                 observed.append(
                     {
                         "type": event_type,
@@ -272,22 +336,26 @@ class Z2MClient:
                 )
                 if event_type not in {"device_joined", "device_interview"} or not ieee:
                     continue
+                if expected_ieees is not None and ieee not in expected_ieees:
+                    if ieee not in existing:
+                        unexpected.add(ieee)
+                        if not join_closed:
+                            self.close_join()
+                            join_closed = True
+                        break
+                    continue
+                if expected_ieees is None and ieee in existing:
+                    continue
                 fresh_event_ieees.add(ieee)
                 candidates.add(ieee)
-                if not join_closed:
-                    self.close_join()
-                    join_closed = True
-                    interview_deadline = time.monotonic() + interview_timeout
-                    print(
-                        "A candidate device appeared; joining is closed while its "
-                        "interview finishes."
-                    )
+                close_after_candidates()
                 if event_type == "device_interview" and data.get("status") == "successful":
                     successes[ieee] = data
                     inspect_inventory()
-                    break
+                    if all_successful():
+                        break
                 if event_type == "device_interview" and data.get("status") == "failed":
-                    interview_failed = True
+                    failed.add(ieee)
                     inspect_inventory()
                     break
                 inspect_inventory()
@@ -296,27 +364,26 @@ class Z2MClient:
                 self.close_join()
             print("Joining has been closed.")
         inspect_inventory()
-        if expected_ieee and candidates and expected_ieee not in candidates:
+        if unexpected:
             raise Z2MError(
-                f"A different device appeared. Expected {expected_ieee}, got "
-                f"{sorted(candidates)}. Observed events: {observed}"
+                "An unexpected device appeared, so joining was closed immediately. "
+                f"Expected={sorted(expected_ieees or [])}, "
+                f"unexpected={sorted(unexpected)}, observed_events={observed}"
             )
-        if (
-            interview_failed
-            and expected_ieee
-            and candidates == {expected_ieee}
-            and not successes
-        ):
+        if failed:
             raise Z2MError(
-                f"The intended device {expected_ieee} joined, but Zigbee2MQTT "
-                "reported that its interview failed. No rename or entity mapping "
-                "was attempted. Rerun the same migration command, keep the device "
-                "close to the coordinator, and keep a sleepy battery device awake "
-                "with a brief button press every 2-3 seconds until the interview "
-                "finishes."
+                f"The intended device interview failed for {sorted(failed)}. No "
+                "rename or entity mapping was attempted. Rerun the same migration "
+                "command and keep sleepy battery devices awake with a brief button "
+                "press every 2-3 seconds until all interviews finish."
             )
         if not candidates and not observed:
-            if expected_ieee in existing:
+            retained_expected = (
+                expected_ieees.intersection(existing)
+                if expected_ieees is not None
+                else set()
+            )
+            if retained_expected:
                 detail = (
                     "An unchanged failed device entry already retained by "
                     "Zigbee2MQTT was correctly ignored so it could not close "
@@ -335,13 +402,27 @@ class Z2MClient:
                 "only after the script says joining is open. If the device is not "
                 "close to the coordinator, select a nearby router with --join-via."
             )
-        if len(candidates) > 1 or len(successes) != 1:
+        if expected_ieees is not None:
+            missing_candidates = expected_ieees - candidates
+            missing_successes = expected_ieees - set(successes)
+        else:
+            missing_candidates = set()
+            missing_successes = set()
+        if (
+            len(candidates) != expected_count
+            or len(successes) != expected_count
+            or missing_candidates
+            or missing_successes
+        ):
             raise Z2MError(
-                "Expected exactly one successfully interviewed device; "
+                f"Expected exactly {expected_count} successfully interviewed "
+                f"device{'s' if expected_count != 1 else ''}; "
                 f"candidates={sorted(candidates)}, successful={sorted(successes)}, "
+                f"missing_candidates={sorted(missing_candidates)}, "
+                f"missing_successes={sorted(missing_successes)}, "
                 f"observed_events={observed}"
             )
-        return next(iter(successes.values()))
+        return successes
 
     def rename_device(self, device_id: str, friendly_name: str) -> Any:
         return self.request(

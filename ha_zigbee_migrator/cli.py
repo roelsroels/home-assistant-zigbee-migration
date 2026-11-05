@@ -217,6 +217,84 @@ def planned_ieee_address(config: AppConfig, row: Any) -> str | None:
     return None
 
 
+def snapshot_device_for_row(config: AppConfig, row: Any) -> dict[str, Any]:
+    """Return the saved HA device record used to build one migration row."""
+    snapshots = sorted(paths(config)["snapshots"].glob("snapshot-*.json"))
+    if not snapshots:
+        raise SafetyError("No initialization snapshot exists. Run initialize first.")
+    snapshot = read_json(snapshots[-1])
+    device = next(
+        (
+            item
+            for item in snapshot["home_assistant"]["devices"]
+            if item.get("id") == row.old_device_id
+        ),
+        None,
+    )
+    if device is None:
+        raise SafetyError(
+            f"Saved device record for {row.migration_id} no longer exists in the "
+            "initialization snapshot"
+        )
+    return device
+
+
+def batch_device_signature(device: dict[str, Any]) -> tuple[str, str]:
+    """Return the manufacturer/model identity required for guarded batches."""
+    return (
+        str(device.get("manufacturer") or "").strip(),
+        str(device.get("model") or "").strip(),
+    )
+
+
+def validate_join_via(
+    bridge_devices: list[dict[str, Any]], requested: str
+) -> str:
+    """Validate and normalize a coordinator, all, or exact router join path."""
+    join_via = requested.strip()
+    if not join_via:
+        raise SafetyError("--join-via cannot be empty")
+    if join_via.casefold() in {"coordinator", "all"}:
+        return join_via.casefold()
+    matching_router = next(
+        (
+            device
+            for device in bridge_devices
+            if isinstance(device, dict)
+            and device.get("type") == "Router"
+            and join_via
+            in {
+                str(device.get("friendly_name", "")),
+                str(device.get("ieee_address", "")),
+            }
+        ),
+        None,
+    )
+    if matching_router is None:
+        raise SafetyError(
+            f"--join-via {join_via!r} is not a current Z2M router. Run "
+            "./run.sh join-routers and copy one exact friendly name."
+        )
+    return join_via
+
+
+def require_nondefault_join_confirmation(join_via: str, device_count: int) -> None:
+    """Confirm broader or router-assisted joining separately from device choice."""
+    if join_via == "coordinator":
+        return
+    route_description = (
+        "all available coordinator/router paths"
+        if join_via == "all"
+        else f"Z2M router {join_via!r}"
+    )
+    require_confirmation(
+        f"Open joining through {route_description} and migrate exactly "
+        f"{device_count} selected physical device"
+        f"{'s' if device_count != 1 else ''}. Do not reset any other Zigbee "
+        "device. This changes only the temporary join path, not the coordinator."
+    )
+
+
 def successful_z2m_device(
     devices: list[dict[str, Any]], ieee: str | None
 ) -> dict[str, Any] | None:
@@ -455,42 +533,12 @@ def command_pair(config: AppConfig, args: argparse.Namespace) -> None:
                     "source": "recovered from bridge/devices",
                 }
             else:
-                join_via = getattr(args, "join_via", "coordinator").strip()
-                if not join_via:
-                    raise SafetyError("--join-via cannot be empty")
-                if join_via.casefold() not in {"coordinator", "all"}:
-                    matching_router = next(
-                        (
-                            device
-                            for device in bridge_devices
-                            if isinstance(device, dict)
-                            and device.get("type") == "Router"
-                            and join_via
-                            in {
-                                str(device.get("friendly_name", "")),
-                                str(device.get("ieee_address", "")),
-                            }
-                        ),
-                        None,
-                    )
-                    if matching_router is None:
-                        raise SafetyError(
-                            f"--join-via {join_via!r} is not a current Z2M router. "
-                            "Run ./run.sh join-routers and copy one exact friendly "
-                            "name."
-                        )
-                if join_via.casefold() != "coordinator":
-                    route_description = (
-                        "all available coordinator/router paths"
-                        if join_via.casefold() == "all"
-                        else f"Z2M router {join_via!r}"
-                    )
-                    require_confirmation(
-                        f"Open joining through {route_description} and migrate "
-                        "exactly this one physical device. Do not reset any other "
-                        "Zigbee device. This changes only the temporary join path, "
-                        "not the coordinator."
-                    )
+                join_via = validate_join_via(
+                    bridge_devices,
+                    getattr(args, "join_via", "coordinator"),
+                )
+                if join_via != "coordinator":
+                    require_nondefault_join_confirmation(join_via, 1)
                 elif not getattr(args, "wizard_confirmed", False):
                     require_confirmation(
                         "Open coordinator-only joining and migrate exactly this one "
@@ -1003,6 +1051,8 @@ def run_device_workflow(
     selection_message: str,
     resume_command: str,
     join_via: str = "coordinator",
+    selection_confirmed: bool = False,
+    show_next_suggestion: bool = True,
 ) -> None:
     """Run or resume one explicitly selected plan row through all safe stages."""
     if row.status == "verified":
@@ -1015,9 +1065,7 @@ def run_device_workflow(
             "only after reviewing why it was skipped."
         )
     print_suggested_device(config, row, "Selected device:")
-    if not confirm_or_cancel(
-        selection_message
-    ):
+    if not selection_confirmed and not confirm_or_cancel(selection_message):
         return
 
     migration_id = row.migration_id
@@ -1074,12 +1122,16 @@ def run_device_workflow(
             "successful and no other device was advanced"
         )
 
-    next_row = next_incomplete_row(config)
-    if next_row is None:
-        print("\nMigration plan complete: every device is verified or skipped.")
-    else:
-        print("\nThis device verified successfully. On the next run, the wizard will suggest:")
-        print_suggested_device(config, next_row)
+    if show_next_suggestion:
+        next_row = next_incomplete_row(config)
+        if next_row is None:
+            print("\nMigration plan complete: every device is verified or skipped.")
+        else:
+            print(
+                "\nThis device verified successfully. On the next run, the wizard "
+                "will suggest:"
+            )
+            print_suggested_device(config, next_row)
 
 
 def command_migrate_next(config: AppConfig, args: argparse.Namespace) -> None:
@@ -1108,6 +1160,188 @@ def command_migrate(config: AppConfig, args: argparse.Namespace) -> None:
         "remain unchanged.",
         f"./run.sh migrate {row.migration_id}",
         join_via=args.join_via,
+    )
+
+
+def command_migrate_batch(config: AppConfig, args: argparse.Namespace) -> None:
+    """Pair a fixed set of identical devices together, then migrate each safely."""
+    requested_ids = list(args.migration_ids)
+    if len(requested_ids) < 2:
+        raise SafetyError("migrate-batch requires at least two migration IDs")
+    if len(set(requested_ids)) != len(requested_ids):
+        raise SafetyError("Each migration ID may appear only once in a batch")
+
+    rows = [plan_row_by_id(config, migration_id) for migration_id in requested_ids]
+    skipped = [row.migration_id for row in rows if row.status == "skip"]
+    if skipped:
+        raise SafetyError(
+            "Deliberately skipped rows cannot be batch-migrated: "
+            + ", ".join(skipped)
+        )
+
+    devices = {
+        row.migration_id: snapshot_device_for_row(config, row) for row in rows
+    }
+    signatures = {
+        batch_device_signature(devices[row.migration_id]) for row in rows
+    }
+    if len(signatures) != 1:
+        details = "; ".join(
+            f"{row.migration_id}={batch_device_signature(devices[row.migration_id])!r}"
+            for row in rows
+        )
+        raise SafetyError(
+            "Batch migration is limited to devices with the same saved "
+            f"manufacturer and model. Selected: {details}"
+        )
+    manufacturer, model = next(iter(signatures))
+    if not manufacturer or not model:
+        raise SafetyError(
+            "Every batch device must have a saved manufacturer and model; use "
+            "single-device migration for unidentified hardware"
+        )
+
+    expected_by_id: dict[str, str] = {}
+    for row in rows:
+        ieee = planned_ieee_address(config, row)
+        if not ieee:
+            raise SafetyError(
+                f"No saved Zigbee IEEE address exists for {row.migration_id}"
+            )
+        expected_by_id[row.migration_id] = ieee.lower()
+    if len(set(expected_by_id.values())) != len(expected_by_id):
+        raise SafetyError("The selected rows do not have unique saved IEEE addresses")
+
+    print(f"\nBatch migration plan: {len(rows)} identical devices")
+    print(f"  Hardware: {manufacturer} — {model}")
+    for row in rows:
+        print(
+            f"  {row.migration_id}: {row.old_device_name} -> "
+            f"{row.target_friendly_name} [{expected_by_id[row.migration_id]}; "
+            f"status: {row.status}]"
+        )
+    if not confirm_or_cancel(
+        "Pair these exact saved IEEE addresses in one joining window, then "
+        "rename, map, and verify each selected device separately."
+    ):
+        return
+
+    output = paths(config)
+    to_pair: list[Any] = []
+    recovered_ids: list[str] = []
+    with Z2MClient(config.mqtt) as z2m:
+        require_baseline(config, z2m)
+        bridge_devices = z2m.retained("bridge/devices")
+        join_via = validate_join_via(bridge_devices, args.join_via)
+        for row in rows:
+            if row.status == "verified":
+                continue
+            if row.status not in {"pending", "retry"}:
+                continue
+            recovered = successful_z2m_device(
+                bridge_devices, expected_by_id[row.migration_id]
+            )
+            if recovered:
+                recovered_ids.append(row.migration_id)
+            else:
+                to_pair.append(row)
+
+        if recovered_ids:
+            print(
+                "Already interviewed successfully; these will not re-enter "
+                f"pairing: {', '.join(recovered_ids)}"
+            )
+        if to_pair:
+            require_nondefault_join_confirmation(join_via, len(to_pair))
+            pairing_ids = [row.migration_id for row in to_pair]
+            print(
+                "The one shared reset should now target: "
+                + ", ".join(pairing_ids)
+            )
+            try:
+                interviews = z2m.supervised_pair_many(
+                    config.safety.permit_join_seconds,
+                    expected_ieees={
+                        expected_by_id[row.migration_id] for row in to_pair
+                    },
+                    join_via=join_via,
+                )
+            except Z2MError as err:
+                for row in to_pair:
+                    update_plan_status(
+                        output["plan"],
+                        row.migration_id,
+                        "retry",
+                        f"Batch pair/interview retry required: {str(err)[:500]}",
+                    )
+                write_json(
+                    output["reports"]
+                    / f"batch-pair-failed-{timestamp_slug()}.json",
+                    {
+                        "migration_ids": pairing_ids,
+                        "expected_ieee_addresses": {
+                            row.migration_id: expected_by_id[row.migration_id]
+                            for row in to_pair
+                        },
+                        "join_via": join_via,
+                        "error": str(err),
+                    },
+                )
+                raise
+            write_json(
+                output["reports"] / f"batch-pair-{timestamp_slug()}.json",
+                {
+                    "migration_ids": pairing_ids,
+                    "expected_ieee_addresses": {
+                        row.migration_id: expected_by_id[row.migration_id]
+                        for row in to_pair
+                    },
+                    "join_via": join_via,
+                    "interviews": interviews,
+                },
+            )
+            print(
+                f"All {len(to_pair)} missing devices interviewed successfully. "
+                "Their exact IEEE identities are retained for the individual "
+                "rename and mapping stages."
+            )
+        else:
+            print(
+                "No shared joining window is needed: every selected pending "
+                "device is already interviewed, or its workflow is further along."
+            )
+
+    resume_command = "./run.sh migrate-batch " + " ".join(requested_ids)
+    if args.join_via != "coordinator":
+        resume_command += f" --join-via {args.join_via!r}"
+    for migration_id in requested_ids:
+        row = plan_row_by_id(config, migration_id)
+        if row.status == "verified":
+            print(f"\n{migration_id} is already verified; skipping it.")
+            continue
+        print(f"\nContinuing the individual workflow for {migration_id}...")
+        run_device_workflow(
+            config,
+            row,
+            "Batch device selection was already confirmed.",
+            resume_command,
+            join_via=args.join_via,
+            selection_confirmed=True,
+            show_next_suggestion=False,
+        )
+        refreshed = plan_row_by_id(config, migration_id)
+        if refreshed.status != "verified":
+            print(
+                f"\nBatch paused safely at {migration_id} with status "
+                f"{refreshed.status!r}. Rerun {resume_command} after resolving "
+                "that device; completed devices will be skipped and successfully "
+                "interviewed devices will not be paired again."
+            )
+            return
+
+    print(
+        "\nBatch complete: every selected device is verified. Other plan rows "
+        "were left unchanged."
     )
 
 
@@ -1214,6 +1448,22 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ROUTER",
         help="temporary join path: coordinator (default), all, or a Z2M router",
     )
+    migrate_batch = subparsers.add_parser(
+        "migrate-batch",
+        help="migrate two or more identical DXXX devices in one pairing window",
+    )
+    migrate_batch.add_argument(
+        "migration_ids",
+        nargs="+",
+        metavar="DXXX",
+        help="migration IDs for identical devices with unique saved IEEE addresses",
+    )
+    migrate_batch.add_argument(
+        "--join-via",
+        default="coordinator",
+        metavar="ROUTER",
+        help="temporary join path: coordinator (default), all, or a Z2M router",
+    )
     baseline = subparsers.add_parser(
         "baseline",
         help="pin the current ConBee II and Zigbee network identity",
@@ -1264,6 +1514,7 @@ COMMANDS = {
     "preflight": command_preflight,
     "migrate-next": command_migrate_next,
     "migrate": command_migrate,
+    "migrate-batch": command_migrate_batch,
     "baseline": command_baseline,
     "snapshot": command_snapshot,
     "audit": command_audit,

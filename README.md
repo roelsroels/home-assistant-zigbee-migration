@@ -99,6 +99,30 @@ interview succeeds. On a retry, an unchanged failed entry already retained in
 Zigbee2MQTT is ignored; only a fresh join/interview event, changed inventory
 state, or successful interview can close joining and advance the migration.
 
+### Migrating identical devices together
+
+Two or more devices with the same saved manufacturer and model can share one
+pairing window. For example, the four identical IKEA lamps in the included
+migration plan can be migrated with:
+
+```bash
+./run.sh migrate-batch D007 D008 D009 D010 --join-via all
+```
+
+After the script says joining is open, reset all selected lamps together (for
+these IKEA lamps, use the shared switch to perform the required six off/on
+cycles). The command does **not** assign identities based on the order in which
+lamps appear. It expects the exact IEEE addresses saved during initialization,
+keeps joining open until every expected lamp appears, and closes joining
+immediately if an unexpected new device appears.
+
+Once all interviews succeed, each device is renamed, mapped, and verified in
+its own guarded workflow with the normal Y/N confirmations. The batch is
+resumable: verified devices are skipped, successfully interviewed devices are
+not paired again, and only still-missing devices are included in a later join
+window. Mixed manufacturer/model selections and duplicate IEEE addresses are
+refused.
+
 Coordinator-only joining remains the default. If a device cannot be brought
 close to the coordinator, list the already migrated mains-powered routers:
 
