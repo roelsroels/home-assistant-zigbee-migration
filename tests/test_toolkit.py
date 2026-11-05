@@ -149,6 +149,43 @@ class ToolkitTests(unittest.TestCase):
         self.assertIn("rerun the same command", message)
         self.assertIn("Connection reset by peer", message)
 
+    def test_config_entry_removal_uses_authenticated_rest_endpoint(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                return b'{"require_restart": false}'
+
+        config = SimpleNamespace(
+            url="https://ha.example.com",
+            websocket_url="wss://ha.example.com/api/websocket",
+            verify_tls=True,
+            token="test-token",
+        )
+        client = HomeAssistantClient(config)
+        with patch(
+            "ha_zigbee_migrator.ha.urlopen",
+            return_value=FakeResponse(),
+        ) as mocked_open:
+            result = client.delete_config_entry("entry/with unsafe chars")
+
+        request = mocked_open.call_args.args[0]
+        self.assertEqual(request.get_method(), "DELETE")
+        self.assertEqual(
+            request.full_url,
+            "https://ha.example.com/api/config/config_entries/entry/"
+            "entry%2Fwith%20unsafe%20chars",
+        )
+        self.assertEqual(
+            request.get_header("Authorization"),
+            "Bearer test-token",
+        )
+        self.assertEqual(result, {"require_restart": False})
+
     def test_no_command_prints_short_command_help(self) -> None:
         output = StringIO()
         with redirect_stdout(output):
