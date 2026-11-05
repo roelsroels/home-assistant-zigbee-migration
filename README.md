@@ -278,6 +278,17 @@ It groups devices as not started, partly completed and resumable, successfully
 verified, or deliberately skipped. The summary count for remaining devices
 includes both not-started and partly completed devices.
 
+To check cleanup readiness at any point, run:
+
+```bash
+./run.sh cleanup-audit
+```
+
+This is read-only. It protects pending and deliberately skipped devices, counts
+the old deCONZ entities belonging to verified migrations, refreshes the
+configuration-reference scan, and writes a detailed report under
+`migration-output/reports/`.
+
 ## Individual commands for inspection and recovery
 
 ### 1. Connectivity preflight
@@ -339,6 +350,23 @@ or mount of `/config`, then run:
 The report includes entity and device ID references in YAML, JSON and `.storage`
 files. Nothing is edited. Device-ID based automations require particular care,
 because a newly discovered Z2M device receives a new HA device ID.
+
+### 5a. Audit deCONZ cleanup readiness
+
+```bash
+./run.sh cleanup-audit
+```
+
+The command reads the live Home Assistant entity and device registries, but does
+not delete or change anything. The configured `paths.home_assistant_config` must
+point to a **current** read-only copy or mount of Home Assistant's `/config`; an
+old copy can miss recently changed automations, scripts, scenes, or dashboards.
+
+Once the command reports that cleanup readiness passed, create a fresh Home
+Assistant backup and remove the deCONZ integration through **Settings > Devices
+& services**. This is safer than deleting deCONZ registry entries one by one:
+Home Assistant removes all entities and devices owned by the integration as one
+consistent operation.
 
 ### 6. Pair one device
 
@@ -445,6 +473,7 @@ baseline                  Pin the current ConBee II/Z2M network identity
 backup-z2m                Download and checksum a Z2M data backup
 snapshot --create-plan    Export HA/Z2M inventory and create worksheets
 audit                     Find entity/device references without editing files
+cleanup-audit             Check deCONZ removal readiness; never deletes anything
 pair D001                 Supervised pairing of one planned device
 apply-entity-map D001          Dry-run one device's entity registry rename plan
 apply-entity-map D001 --apply  Apply reviewed mappings with rollback attempt

@@ -184,6 +184,10 @@ class ToolkitTests(unittest.TestCase):
         args = build_parser().parse_args(["status"])
         self.assertEqual(args.command, "status")
 
+    def test_cleanup_audit_command_parses(self) -> None:
+        args = build_parser().parse_args(["cleanup-audit"])
+        self.assertEqual(args.command, "cleanup-audit")
+
     def test_reopen_command_parses(self) -> None:
         args = build_parser().parse_args(["reopen", "D033"])
         self.assertEqual(args.command, "reopen")

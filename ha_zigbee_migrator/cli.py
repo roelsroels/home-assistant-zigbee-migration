@@ -516,6 +516,214 @@ def command_audit(config: AppConfig, _args: argparse.Namespace) -> None:
     print("No configuration files were changed.")
 
 
+def command_cleanup_audit(config: AppConfig, _args: argparse.Namespace) -> None:
+    """Report whether the deCONZ integration can be removed safely.
+
+    This deliberately performs no registry deletions. Removing individual deCONZ
+    entities while the integration still owns them can make them reappear. Once
+    every wanted device has moved and references are clear, removing the deCONZ
+    integration lets Home Assistant clean up its registry consistently.
+    """
+    output = paths(config)
+    plan_path = output["plan"]
+    if not plan_path.exists():
+        raise SafetyError("No migration plan exists. Run ./run.sh initialize first.")
+
+    plan = load_plan(plan_path)
+    by_device = {row.old_device_id: row for row in plan}
+
+    config_root = config.paths.home_assistant_config
+    reference_report: Path | None = None
+    if config_root is not None and config_root.exists():
+        needles: list[tuple[str, str]] = []
+        for row in plan:
+            needles.append(("device_id", row.old_device_id))
+            needles.extend(("entity_id", entity_id) for entity_id in row.old_entity_ids)
+        reference_report = (
+            output["reports"] / f"reference-audit-{timestamp_slug()}.json"
+        )
+        scan_references(config_root, needles, reference_report)
+
+    with HomeAssistantClient(config.home_assistant) as ha:
+        entities = ha.entities()
+        devices = ha.devices()
+
+    live_deconz = [
+        entity for entity in entities if entity.get("platform") == "deconz"
+    ]
+    planned_entities = [
+        entity for entity in live_deconz if entity.get("device_id") in by_device
+    ]
+    unknown_entities = [
+        entity for entity in live_deconz if entity.get("device_id") not in by_device
+    ]
+    live_by_device: dict[str, list[dict[str, Any]]] = {}
+    for entity in planned_entities:
+        live_by_device.setdefault(str(entity.get("device_id")), []).append(entity)
+
+    protected_rows = [
+        by_device[device_id]
+        for device_id in live_by_device
+        if by_device[device_id].status != "verified"
+    ]
+    verified_rows = [
+        by_device[device_id]
+        for device_id in live_by_device
+        if by_device[device_id].status == "verified"
+    ]
+
+    references: list[dict[str, Any]] = []
+    if reference_report is not None:
+        report_rows = read_json(reference_report)
+        live_deconz_ids = {entity["entity_id"] for entity in live_deconz}
+        old_device_ids = set(by_device)
+        ignored_fragments = (
+            "/.storage/core.entity_registry",
+            "/.storage/core.device_registry",
+            "/.storage/core.config_entries",
+            "/.storage/trace.saved_traces",
+            "/.migration_backup/",
+        )
+        references = [
+            hit
+            for hit in report_rows
+            if (
+                (
+                    hit.get("kind") == "device_id"
+                    and hit.get("reference") in old_device_ids
+                )
+                or (
+                    hit.get("kind") == "entity_id"
+                    and hit.get("reference") in live_deconz_ids
+                )
+            )
+            and not any(
+                fragment in str(hit.get("path", "")).replace("\\", "/")
+                for fragment in ignored_fragments
+            )
+            and not Path(str(hit.get("path", ""))).name.startswith("tmp")
+        ]
+
+    old_device_registry_ids = {
+        device.get("id")
+        for device in devices
+        if device.get("id") in by_device
+    }
+    ready = bool(reference_report) and not (
+        protected_rows or unknown_entities or references
+    )
+    report = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "configuration_source": str(config_root) if config_root else None,
+        "reference_report": str(reference_report) if reference_report else None,
+        "ready_to_remove_deconz": ready,
+        "counts": {
+            "live_deconz_entities": len(live_deconz),
+            "verified_cleanup_entities": sum(
+                len(live_by_device[row.old_device_id]) for row in verified_rows
+            ),
+            "verified_cleanup_devices": len(verified_rows),
+            "protected_devices": len(protected_rows),
+            "unknown_deconz_entities": len(unknown_entities),
+            "configuration_references": len(references),
+            "old_devices_in_registry": len(old_device_registry_ids),
+        },
+        "protected_devices": [
+            {
+                "migration_id": row.migration_id,
+                "name": row.old_device_name,
+                "status": row.status,
+                "entities": sorted(
+                    entity["entity_id"] for entity in live_by_device[row.old_device_id]
+                ),
+            }
+            for row in sorted(protected_rows, key=lambda item: item.migration_id)
+        ],
+        "verified_cleanup_devices": [
+            {
+                "migration_id": row.migration_id,
+                "name": row.old_device_name,
+                "entities": sorted(
+                    entity["entity_id"] for entity in live_by_device[row.old_device_id]
+                ),
+            }
+            for row in sorted(verified_rows, key=lambda item: item.migration_id)
+        ],
+        "unknown_deconz_entities": sorted(
+            entity["entity_id"] for entity in unknown_entities
+        ),
+        "configuration_references": references,
+    }
+    report_path = output["reports"] / f"cleanup-audit-{timestamp_slug()}.json"
+    write_json(report_path, report)
+
+    print(section_heading("deCONZ cleanup audit"))
+    print(f"  Live deCONZ entities:       {len(live_deconz)}")
+    print(
+        f"  Verified cleanup set:       {report['counts']['verified_cleanup_entities']} "
+        f"entities on {len(verified_rows)} devices"
+    )
+    print(warning(f"  Protected devices:          {len(protected_rows)}"))
+    print(warning(f"  Configuration references:  {len(references)}"))
+    print(warning(f"  Unplanned deCONZ entities:  {len(unknown_entities)}"))
+
+    print(f"\n{section_heading('Protected — do not remove')}")
+    if not protected_rows:
+        print("  (none)")
+    for row in sorted(protected_rows, key=lambda item: item.migration_id):
+        print(
+            f"  {row.migration_id}  {row.old_device_name} "
+            f"[status: {status_value(row.status)}]"
+        )
+        for entity in sorted(
+            live_by_device[row.old_device_id], key=lambda item: item["entity_id"]
+        ):
+            print(f"    - {entity['entity_id']}")
+
+    if references:
+        print(f"\n{section_heading('References to update or deliberately retire')}")
+        for hit in references:
+            print(
+                f"  - {hit.get('reference')}  "
+                f"[{hit.get('path')}:{hit.get('line')}]"
+            )
+
+    print(f"\nDetailed report: {report_path}")
+    if config_root is None or not config_root.exists():
+        print(
+            warning(
+                "No accessible Home Assistant configuration copy was scanned. "
+                "Set paths.home_assistant_config and rerun this command."
+            )
+        )
+    else:
+        print(f"Configuration source scanned: {config_root}")
+        print(
+            "Make sure this is a current copy or read-only mount of /config; an "
+            "old copy can miss recently edited automations, scripts, scenes, or "
+            "dashboards."
+        )
+
+    if ready:
+        print(
+            success(
+                "Cleanup readiness passed. Create a fresh Home Assistant backup, "
+                "then remove the deCONZ integration in Settings > Devices & "
+                "services. Home Assistant will remove its remaining deCONZ "
+                "entities and devices together."
+            )
+        )
+    else:
+        print(
+            warning(
+                "Not ready to remove deCONZ. Finish or deliberately retire every "
+                "protected device, resolve the references above, refresh the "
+                "configuration copy, and rerun ./run.sh cleanup-audit."
+            )
+        )
+    print("No Home Assistant configuration or registry entry was changed.")
+
+
 def command_backup(config: AppConfig, _args: argparse.Namespace) -> None:
     output = paths(config)
     with Z2MClient(config.mqtt) as z2m:
@@ -1040,6 +1248,7 @@ def meaningful_reference_hits(
     ignored_fragments = (
         "/.storage/core.entity_registry",
         "/.storage/core.device_registry",
+        "/.storage/core.config_entries",
         "/.storage/trace.saved_traces",
         "/.migration_backup/",
     )
@@ -1823,6 +2032,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="scan configuration references without editing files",
     )
     subparsers.add_parser(
+        "cleanup-audit",
+        help="check whether deCONZ can be removed; never deletes anything",
+    )
+    subparsers.add_parser(
         "backup-z2m",
         help="download and checksum a Zigbee2MQTT data backup",
     )
@@ -1863,6 +2076,7 @@ COMMANDS = {
     "baseline": command_baseline,
     "snapshot": command_snapshot,
     "audit": command_audit,
+    "cleanup-audit": command_cleanup_audit,
     "backup-z2m": command_backup,
     "pair": command_pair,
     "apply-entity-map": command_apply_entity_map,
